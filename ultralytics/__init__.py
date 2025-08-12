@@ -28,3 +28,5 @@ __all__ = (
     "download",
     "settings",
 )
+
+print("This is confirmation that I did it!!!")
