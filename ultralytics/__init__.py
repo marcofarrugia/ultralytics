@@ -1,6 +1,8 @@
 # Ultralytics 🚀 AGPL-3.0 License - https://ultralytics.com/license
 
-__version__ = "8.3.244"
+__version__ = "8.3.192"
+__fork_owner__ = "Marco Farrugia"
+__fork_name__ = "Underwater YOLO11 Ablations"
 
 import importlib
 import os

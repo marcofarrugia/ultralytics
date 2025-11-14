@@ -119,13 +119,15 @@ class BboxLoss(nn.Module):
         pred_bboxes: torch.Tensor,
         anchor_points: torch.Tensor,
         target_bboxes: torch.Tensor,
-        target_scores: torch.Tensor,
+        target_scores: torch.Tensor,  # the confidence / importance of each target bbox as assigned to each anchor by the TAL
         target_scores_sum: torch.Tensor,
         fg_mask: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Compute IoU and DFL losses for bounding boxes."""
         weight = target_scores.sum(-1)[fg_mask].unsqueeze(-1)
+        # Compute IoU (similarity) between predicted and target boxes
         iou = bbox_iou(pred_bboxes[fg_mask], target_bboxes[fg_mask], xywh=False, CIoU=True)
+        # Convert IoU to loss: weighted sum over positives and divide by target_scores_sum to get weighted mean.
         loss_iou = ((1.0 - iou) * weight).sum() / target_scores_sum
 
         # DFL loss
@@ -216,11 +218,11 @@ class v8DetectionLoss:
 
     def preprocess(self, targets: torch.Tensor, batch_size: int, scale_tensor: torch.Tensor) -> torch.Tensor:
         """Preprocess targets by converting to tensor format and scaling coordinates."""
-        nl, ne = targets.shape
-        if nl == 0:
+        nl, ne = targets.shape      # number of labels/targets, number of elements per target
+        if nl == 0:     
             out = torch.zeros(batch_size, 0, ne - 1, device=self.device)
         else:
-            i = targets[:, 0]  # image index
+            i = targets[:, 0]  # image indexes
             _, counts = i.unique(return_counts=True)
             counts = counts.to(dtype=torch.int32)
             out = torch.zeros(batch_size, counts.max(), ne - 1, device=self.device)
@@ -260,7 +262,7 @@ class v8DetectionLoss:
         targets = torch.cat((batch["batch_idx"].view(-1, 1), batch["cls"].view(-1, 1), batch["bboxes"]), 1)
         targets = self.preprocess(targets, batch_size, scale_tensor=imgsz[[1, 0, 1, 0]])
         gt_labels, gt_bboxes = targets.split((1, 4), 2)  # cls, xyxy
-        mask_gt = gt_bboxes.sum(2, keepdim=True).gt_(0.0)
+        mask_gt = gt_bboxes.sum(2, keepdim=True).gt_(0.0)   # mask the bboxes which are zeros as a result
 
         # Pboxes
         pred_bboxes = self.bbox_decode(anchor_points, pred_distri)  # xyxy, (b, h*w, 4)
