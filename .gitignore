@@ -203,3 +203,5 @@ calibration_*.npy
 # Training logs
 args.yaml
 results.csv
+trainCOCO8.py
+valCOCO8.py
