@@ -25,11 +25,10 @@ from ultralytics.utils.patches import imread
 
 @dataclass
 class SourceTypes:
-    """
-    Class to represent various types of input sources for predictions.
+    """Class to represent various types of input sources for predictions.
 
-    This class uses dataclass to define boolean flags for different types of input sources that can be used for
-    making predictions with YOLO models.
+    This class uses dataclass to define boolean flags for different types of input sources that can be used for making
+    predictions with YOLO models.
 
     Attributes:
         stream (bool): Flag indicating if the input source is a video stream.
@@ -52,24 +51,23 @@ class SourceTypes:
 
 
 class LoadStreams:
-    """
-    Stream Loader for various types of video streams.
+    """Stream Loader for various types of video streams.
 
-    Supports RTSP, RTMP, HTTP, and TCP streams. This class handles the loading and processing of multiple video
-    streams simultaneously, making it suitable for real-time video analysis tasks.
+    Supports RTSP, RTMP, HTTP, and TCP streams. This class handles the loading and processing of multiple video streams
+    simultaneously, making it suitable for real-time video analysis tasks.
 
     Attributes:
-        sources (List[str]): The source input paths or URLs for the video streams.
+        sources (list[str]): The source input paths or URLs for the video streams.
         vid_stride (int): Video frame-rate stride.
         buffer (bool): Whether to buffer input streams.
         running (bool): Flag to indicate if the streaming thread is running.
         mode (str): Set to 'stream' indicating real-time capture.
-        imgs (List[List[np.ndarray]]): List of image frames for each stream.
-        fps (List[float]): List of FPS for each stream.
-        frames (List[int]): List of total frames for each stream.
-        threads (List[Thread]): List of threads for each stream.
-        shape (List[Tuple[int, int, int]]): List of shapes for each stream.
-        caps (List[cv2.VideoCapture]): List of cv2.VideoCapture objects for each stream.
+        imgs (list[list[np.ndarray]]): List of image frames for each stream.
+        fps (list[float]): List of FPS for each stream.
+        frames (list[int]): List of total frames for each stream.
+        threads (list[Thread]): List of threads for each stream.
+        shape (list[tuple[int, int, int]]): List of shapes for each stream.
+        caps (list[cv2.VideoCapture]): List of cv2.VideoCapture objects for each stream.
         bs (int): Batch size for processing.
         cv2_flag (int): OpenCV flag for image reading (grayscale or RGB).
 
@@ -94,8 +92,7 @@ class LoadStreams:
     """
 
     def __init__(self, sources: str = "file.streams", vid_stride: int = 1, buffer: bool = False, channels: int = 3):
-        """
-        Initialize stream loader for multiple video sources, supporting various stream types.
+        """Initialize stream loader for multiple video sources, supporting various stream types.
 
         Args:
             sources (str): Path to streams file or single stream URL.
@@ -126,7 +123,7 @@ class LoadStreams:
             if urllib.parse.urlparse(s).hostname in {"www.youtube.com", "youtube.com", "youtu.be"}:  # YouTube video
                 # YouTube format i.e. 'https://www.youtube.com/watch?v=Jsn8D3aC840' or 'https://youtu.be/Jsn8D3aC840'
                 s = get_best_youtube_url(s)
-            s = eval(s) if s.isnumeric() else s  # i.e. s = '0' local webcam
+            s = int(s) if s.isnumeric() else s  # i.e. s = '0' local webcam
             if s == 0 and (IS_COLAB or IS_KAGGLE):
                 raise NotImplementedError(
                     "'source=0' webcam not supported in Colab and Kaggle notebooks. "
@@ -227,11 +224,10 @@ class LoadStreams:
 
 
 class LoadScreenshots:
-    """
-    Ultralytics screenshot dataloader for capturing and processing screen images.
+    """Ultralytics screenshot dataloader for capturing and processing screen images.
 
-    This class manages the loading of screenshot images for processing with YOLO. It is suitable for use with
-    `yolo predict source=screen`.
+    This class manages the loading of screenshot images for processing with YOLO. It is suitable for use with `yolo
+    predict source=screen`.
 
     Attributes:
         source (str): The source input indicating which screen to capture.
@@ -245,7 +241,7 @@ class LoadScreenshots:
         sct (mss.mss): Screen capture object from `mss` library.
         bs (int): Batch size, set to 1.
         fps (int): Frames per second, set to 30.
-        monitor (Dict[str, int]): Monitor configuration details.
+        monitor (dict[str, int]): Monitor configuration details.
         cv2_flag (int): OpenCV flag for image reading (grayscale or RGB).
 
     Methods:
@@ -259,15 +255,14 @@ class LoadScreenshots:
     """
 
     def __init__(self, source: str, channels: int = 3):
-        """
-        Initialize screenshot capture with specified screen and region parameters.
+        """Initialize screenshot capture with specified screen and region parameters.
 
         Args:
             source (str): Screen capture source string in format "screen_num left top width height".
             channels (int): Number of image channels (1 for grayscale, 3 for RGB).
         """
         check_requirements("mss")
-        import mss  # noqa
+        import mss
 
         source, *params = source.split()
         self.screen, left, top, width, height = 0, None, None, None, None  # default to full screen 0
@@ -307,16 +302,15 @@ class LoadScreenshots:
 
 
 class LoadImagesAndVideos:
-    """
-    A class for loading and processing images and videos for YOLO object detection.
+    """A class for loading and processing images and videos for YOLO object detection.
 
-    This class manages the loading and pre-processing of image and video data from various sources, including
-    single image files, video files, and lists of image and video paths.
+    This class manages the loading and pre-processing of image and video data from various sources, including single
+    image files, video files, and lists of image and video paths.
 
     Attributes:
-        files (List[str]): List of image and video file paths.
+        files (list[str]): List of image and video file paths.
         nf (int): Total number of files (images and videos).
-        video_flag (List[bool]): Flags indicating whether a file is a video (True) or an image (False).
+        video_flag (list[bool]): Flags indicating whether a file is a video (True) or an image (False).
         mode (str): Current mode, 'image' or 'video'.
         vid_stride (int): Stride for video frame-rate.
         bs (int): Batch size.
@@ -347,11 +341,10 @@ class LoadImagesAndVideos:
     """
 
     def __init__(self, path: str | Path | list, batch: int = 1, vid_stride: int = 1, channels: int = 3):
-        """
-        Initialize dataloader for images and videos, supporting various input formats.
+        """Initialize dataloader for images and videos, supporting various input formats.
 
         Args:
-            path (str | Path | List): Path to images/videos, directory, or list of paths.
+            path (str | Path | list): Path to images/videos, directory, or list of paths.
             batch (int): Batch size for processing.
             vid_stride (int): Video frame-rate stride.
             channels (int): Number of image channels (1 for grayscale, 3 for RGB).
@@ -490,15 +483,14 @@ class LoadImagesAndVideos:
 
 
 class LoadPilAndNumpy:
-    """
-    Load images from PIL and Numpy arrays for batch processing.
+    """Load images from PIL and Numpy arrays for batch processing.
 
     This class manages loading and pre-processing of image data from both PIL and Numpy formats. It performs basic
     validation and format conversion to ensure that the images are in the required format for downstream processing.
 
     Attributes:
-        paths (List[str]): List of image paths or autogenerated filenames.
-        im0 (List[np.ndarray]): List of images stored as Numpy arrays.
+        paths (list[str]): List of image paths or autogenerated filenames.
+        im0 (list[np.ndarray]): List of images stored as Numpy arrays.
         mode (str): Type of data being processed, set to 'image'.
         bs (int): Batch size, equivalent to the length of `im0`.
 
@@ -517,11 +509,10 @@ class LoadPilAndNumpy:
     """
 
     def __init__(self, im0: Image.Image | np.ndarray | list, channels: int = 3):
-        """
-        Initialize a loader for PIL and Numpy images, converting inputs to a standardized format.
+        """Initialize a loader for PIL and Numpy images, converting inputs to a standardized format.
 
         Args:
-            im0 (PIL.Image.Image | np.ndarray | List): Single image or list of images in PIL or numpy format.
+            im0 (PIL.Image.Image | np.ndarray | list): Single image or list of images in PIL or numpy format.
             channels (int): Number of image channels (1 for grayscale, 3 for RGB).
         """
         if not isinstance(im0, list):
@@ -564,17 +555,16 @@ class LoadPilAndNumpy:
 
 
 class LoadTensor:
-    """
-    A class for loading and processing tensor data for object detection tasks.
+    """A class for loading and processing tensor data for object detection tasks.
 
-    This class handles the loading and pre-processing of image data from PyTorch tensors, preparing them for
-    further processing in object detection pipelines.
+    This class handles the loading and pre-processing of image data from PyTorch tensors, preparing them for further
+    processing in object detection pipelines.
 
     Attributes:
         im0 (torch.Tensor): The input tensor containing the image(s) with shape (B, C, H, W).
         bs (int): Batch size, inferred from the shape of `im0`.
         mode (str): Current processing mode, set to 'image'.
-        paths (List[str]): List of image paths or auto-generated filenames.
+        paths (list[str]): List of image paths or auto-generated filenames.
 
     Methods:
         _single_check: Validates and formats an input tensor.
@@ -588,8 +578,7 @@ class LoadTensor:
     """
 
     def __init__(self, im0: torch.Tensor) -> None:
-        """
-        Initialize LoadTensor object for processing torch.Tensor image data.
+        """Initialize LoadTensor object for processing torch.Tensor image data.
 
         Args:
             im0 (torch.Tensor): Input tensor with shape (B, C, H, W).
@@ -656,8 +645,7 @@ def autocast_list(source: list[Any]) -> list[Image.Image | np.ndarray]:
 
 
 def get_best_youtube_url(url: str, method: str = "pytube") -> str | None:
-    """
-    Retrieve the URL of the best quality MP4 video stream from a given YouTube video.
+    """Retrieve the URL of the best quality MP4 video stream from a given YouTube video.
 
     Args:
         url (str): The URL of the YouTube video.
@@ -690,7 +678,7 @@ def get_best_youtube_url(url: str, method: str = "pytube") -> str | None:
 
     elif method == "pafy":
         check_requirements(("pafy", "youtube_dl==2020.12.2"))
-        import pafy  # noqa
+        import pafy
 
         return pafy.new(url).getbestvideo(preftype="mp4").url
 
