@@ -3,6 +3,7 @@
 __version__ = "8.3.192"
 __fork_owner__ = "Marco Farrugia"
 __fork_name__ = "Underwater YOLO11 Ablations"
+__ablation_name__ = "baseline"
 
 import importlib
 import os
