@@ -200,8 +200,11 @@ calibration_*.npy
 *.ico
 *.raw
 
-# Training logs
+# Others
 args.yaml
 results.csv
 trainCOCO8.py
 valCOCO8.py
+detectTest.py
+AGENTS.md
+ablation_code
