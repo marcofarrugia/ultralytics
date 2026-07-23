@@ -3,7 +3,7 @@
 __version__ = "8.3.244"
 __fork_owner__ = "Marco Farrugia"
 __fork_name__ = "Underwater YOLO11 Ablations"
-__ablation_name__ = "baseline"
+__ablation_name__ = "sppf-remove"
 
 import importlib
 import os
