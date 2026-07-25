@@ -206,5 +206,8 @@ results.csv
 trainCOCO8.py
 valCOCO8.py
 detectTest.py
-AGENTS.md
-ablation_code
+ablation_code/*
+!ablation_code/audit_pretrained_transfer.py
+!ablation_code/yolo11m_sppf_identity_map_example.json
+!ablation_code/yolo11m_sppf_removed_map_example.json
+!ablation_code/README.md
