@@ -25,6 +25,7 @@ __all__ = (
     "SPP",
     "SPPELAN",
     "SPPF",
+    "DWHDCSPPF",
     "AConv",
     "ADown",
     "Attention",
@@ -229,6 +230,47 @@ class SPPF(nn.Module):
         """Apply sequential pooling operations to input and return concatenated feature maps."""
         y = [self.cv1(x)]
         y.extend(self.m(y[-1]) for _ in range(3))
+        return self.cv2(torch.cat(y, 1))
+
+
+class DWHDCSPPF(nn.Module):
+    """SPPF replacement using serial depthwise convolutions with a hybrid dilation schedule."""
+
+    def __init__(
+        self,
+        c1: int,
+        c2: int,
+        dilations: tuple[int, ...] | list[int] = (1, 2, 3),
+    ):
+        """Initialize the depthwise HDC-SPPF module.
+
+        Args:
+            c1 (int): Input channels.
+            c2 (int): Output channels.
+            dilations (tuple[int, ...] | list[int]): Three positive dilation rates.
+
+        Notes:
+            The default rates produce cumulative nominal receptive-field spans of 3, 7, and 13.
+        """
+        super().__init__()
+        if (
+            not isinstance(dilations, (tuple, list))
+            or len(dilations) != 3
+            or any(type(d) is not int or d < 1 for d in dilations)
+        ):
+            raise ValueError(f"dilations must contain exactly three positive integers, but received {dilations}")
+
+        self.dilations = tuple(dilations)
+        c_ = c1 // 2  # hidden channels
+        self.cv1 = Conv(c1, c_, 1, 1)
+        self.cv2 = Conv(c_ * 4, c2, 1, 1)
+        self.m = nn.ModuleList(DWConv(c_, c_, 3, 1, d=d) for d in self.dilations)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Apply serial depthwise HDC stages and fuse their intermediate feature maps."""
+        y = [self.cv1(x)]
+        for m in self.m:
+            y.append(m(y[-1]))
         return self.cv2(torch.cat(y, 1))
 
 
