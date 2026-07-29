@@ -41,7 +41,10 @@ def _replace_layer_index(key: str, index: int) -> str:
 
 def _module_type(module: torch.nn.Module) -> str:
     """Return the parser-recorded type used to compare top-level layers."""
-    return str(getattr(module, "type", f"{type(module).__module__}.{type(module).__qualname__}"))
+    recorded_type = getattr(module, "type", None)
+    if isinstance(recorded_type, str):
+        return recorded_type
+    return f"{type(module).__module__}.{type(module).__qualname__}"
 
 
 def _short_type(module: torch.nn.Module) -> str:
