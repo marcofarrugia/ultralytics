@@ -163,6 +163,81 @@ def _load_layer_map(
     return mapping
 
 
+def _has_module_prefix(name: str, prefix: str) -> bool:
+    """Return whether a module or state key belongs to an exact module prefix."""
+    return name == prefix or name.startswith(f"{prefix}.")
+
+
+def _validate_non_overlapping_prefixes(prefixes: list[str], label: str) -> None:
+    """Reject nested prefixes that would make an override ambiguous."""
+    for index, left in enumerate(prefixes):
+        for right in prefixes[index + 1 :]:
+            if _has_module_prefix(left, right) or _has_module_prefix(right, left):
+                raise ValueError(
+                    f"The submodule map contains overlapping {label} prefixes: "
+                    f"{left!r} and {right!r}."
+                )
+
+
+def _load_submodule_map(
+    path: Path,
+    source: torch.nn.Module,
+    target: torch.nn.Module,
+) -> dict[str, str]:
+    """Load reviewed target-prefix to source-prefix correspondence overrides."""
+    with path.open(encoding="utf-8") as file:
+        raw = json.load(file)
+    if not isinstance(raw, dict):
+        raise ValueError("The submodule map must be a JSON object.")
+
+    mapping: dict[str, str] = {}
+    for target_prefix, source_prefix in raw.items():
+        if (
+            not isinstance(target_prefix, str)
+            or not target_prefix
+            or not isinstance(source_prefix, str)
+            or not source_prefix
+        ):
+            raise ValueError("Submodule-map keys and values must be non-empty strings.")
+        mapping[target_prefix] = source_prefix
+
+    source_prefixes = list(mapping.values())
+    if len(source_prefixes) != len(set(source_prefixes)):
+        raise ValueError("A source submodule may appear only once in the submodule map.")
+    _validate_non_overlapping_prefixes(list(mapping), "target")
+    _validate_non_overlapping_prefixes(source_prefixes, "source")
+
+    source_modules = dict(source.named_modules())
+    target_modules = dict(target.named_modules())
+    for target_prefix, source_prefix in mapping.items():
+        if target_prefix not in target_modules:
+            raise ValueError(f"Target submodule does not exist: {target_prefix!r}.")
+        if source_prefix not in source_modules:
+            raise ValueError(f"Source submodule does not exist: {source_prefix!r}.")
+        if _module_type(target_modules[target_prefix]) != _module_type(source_modules[source_prefix]):
+            raise ValueError(
+                f"Mapped submodules have different types: target {target_prefix!r} "
+                f"({_short_type(target_modules[target_prefix])}) and source {source_prefix!r} "
+                f"({_short_type(source_modules[source_prefix])})."
+            )
+    return mapping
+
+
+def _intended_source_key(
+    target_key: str,
+    layer_map: dict[int, int | None],
+    submodule_map: dict[str, str],
+) -> str | None:
+    """Resolve a target key using submodule overrides before layer correspondence."""
+    for target_prefix, source_prefix in submodule_map.items():
+        if _has_module_prefix(target_key, target_prefix):
+            return f"{source_prefix}{target_key[len(target_prefix):]}"
+
+    target_index = _layer_index(target_key)
+    source_index = layer_map.get(target_index) if target_index is not None else None
+    return _replace_layer_index(target_key, source_index) if source_index is not None else None
+
+
 def _partial_first_conv_elements(
     source_state: dict[str, torch.Tensor],
     target_state: dict[str, torch.Tensor],
@@ -213,8 +288,10 @@ def _audit_transfer(
     source: DetectionModel,
     target: DetectionModel,
     layer_map: dict[int, int | None],
+    submodule_map: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Measure actual and semantic transfer from source into target."""
+    submodule_map = submodule_map or {}
     source_state, target_state = _state_copy(source), _state_copy(target)
     source_parameters = dict(source.named_parameters())
     target_parameters = dict(target.named_parameters())
@@ -233,12 +310,10 @@ def _audit_transfer(
     shape_mismatches: list[dict[str, Any]] = []
     new_keys: list[str] = []
     for target_key, target_parameter in target_parameters.items():
-        target_index = _layer_index(target_key)
-        source_index = layer_map.get(target_index) if target_index is not None else None
-        if source_index is None:
+        source_key = _intended_source_key(target_key, layer_map, submodule_map)
+        if source_key is None:
             new_keys.append(target_key)
             continue
-        source_key = _replace_layer_index(target_key, source_index)
         semantic_source[target_key] = source_key
         source_parameter = source_parameters.get(source_key)
         if source_parameter is None:
@@ -266,20 +341,18 @@ def _audit_transfer(
     missed_keys = {key for key, source_key in semantic_full.items() if source_key != key}
     missed = sum(target_parameters[key].numel() for key in missed_keys)
 
-    collision_state_keys = []
+    collision_state_keys: dict[str, str | None] = {}
     for key in exact_keys:
-        target_index = _layer_index(key)
-        source_index = layer_map.get(target_index) if target_index is not None else None
-        intended = _replace_layer_index(key, source_index) if source_index is not None else None
+        intended = _intended_source_key(key, layer_map, submodule_map)
         if intended != key:
-            collision_state_keys.append(key)
+            collision_state_keys[key] = intended
 
     groups: dict[tuple[int, int | None], dict[str, Any]] = {}
-    for key in sorted(collision_state_keys):
+    for key, intended in sorted(collision_state_keys.items()):
         target_index = _layer_index(key)
         if target_index is None:
             continue
-        semantic_index = layer_map.get(target_index)
+        semantic_index = _layer_index(intended) if intended is not None else None
         group = groups.setdefault(
             (target_index, semantic_index),
             {
@@ -288,8 +361,10 @@ def _audit_transfer(
                 "semantic_source_layer": semantic_index,
                 "parameter_keys": [],
                 "buffer_keys": [],
+                "correspondence_keys": {},
             },
         )
+        group["correspondence_keys"][key] = intended
         if key in target_parameters:
             group["parameter_keys"].append(key)
         elif key in target_buffers:
@@ -379,6 +454,7 @@ def _print_report(
     source: DetectionModel,
     target: DetectionModel,
     mapping: dict[int, int | None],
+    submodule_mapping: dict[str, str],
     ambiguous: bool,
     baseline_valid: bool,
     baseline_issues: list[str],
@@ -447,6 +523,11 @@ def _print_report(
         for index in unmatched_target:
             print(f"  target {index} ({_short_type(target.model[index])}): new or replaced")
 
+    if submodule_mapping:
+        print("\nSubmodule correspondence overrides")
+        for target_prefix, source_prefix in sorted(submodule_mapping.items()):
+            print(f"  target {target_prefix} -> source {source_prefix}")
+
     if induced_mismatches and not ambiguous:
         print("\nAblation-induced shape changes")
         for index in sorted({_layer_index(item["target_key"]) for item in induced_mismatches}):
@@ -457,16 +538,18 @@ def _print_report(
         print("\nSuspicious collisions")
         for collision in ablation["collisions"]:
             target_index = collision["target_layer"]
-            semantic_index = collision["semantic_source_layer"]
             loaded_type = _short_type(source.model[target_index]) if target_index < len(source.model) else "missing"
             for key in collision["parameter_keys"]:
+                correspondence_key = collision["correspondence_keys"][key]
+                semantic_index = _layer_index(correspondence_key) if correspondence_key is not None else None
                 print(f"  {key}")
                 print(f"    loader source:  layer {target_index} {loaded_type}")
                 print(f"    target:         layer {target_index} {_short_type(target.model[target_index])}")
-                if semantic_index is None:
+                if correspondence_key is None:
                     print("    correspondence: no source layer")
+                elif semantic_index is None:
+                    print(f"    correspondence: {correspondence_key}")
                 else:
-                    correspondence_key = _replace_layer_index(key, semantic_index)
                     print(
                         f"    correspondence: source layer {semantic_index} "
                         f"{_short_type(source.model[semantic_index])} ({correspondence_key})"
@@ -488,7 +571,13 @@ def _print_report(
         print("  No architecture-induced transfer problem was identified.")
 
 
-def audit(model_path: Path, weights_path: Path, data_path: Path, semantic_map_path: Path | None = None) -> None:
+def audit(
+    model_path: Path,
+    weights_path: Path,
+    data_path: Path,
+    semantic_map_path: Path | None = None,
+    submodule_map_path: Path | None = None,
+) -> None:
     """Build source, baseline, and ablation models and print the audit."""
     # Scaled standard names such as yolo11n.yaml can resolve to the shared
     # yolo11.yaml through yaml_model_load, so model_path need not itself exist.
@@ -497,6 +586,8 @@ def audit(model_path: Path, weights_path: Path, data_path: Path, semantic_map_pa
             raise FileNotFoundError(f"The {label} does not exist: {path}")
     if semantic_map_path is not None and not semantic_map_path.is_file():
         raise FileNotFoundError(f"The semantic map does not exist: {semantic_map_path}")
+    if submodule_map_path is not None and not submodule_map_path.is_file():
+        raise FileNotFoundError(f"The submodule map does not exist: {submodule_map_path}")
 
     data = check_det_dataset(str(data_path), autodownload=False)
     nc, channels = int(data["nc"]), int(data.get("channels", 3))
@@ -525,7 +616,10 @@ def audit(model_path: Path, weights_path: Path, data_path: Path, semantic_map_pa
     else:
         mapping = _load_layer_map(semantic_map_path, source_layers, target_layers)
         ambiguous = False
-    ablation_report = _audit_transfer(source, target_model, mapping)
+    submodule_mapping = (
+        _load_submodule_map(submodule_map_path, source, target_model) if submodule_map_path is not None else {}
+    )
+    ablation_report = _audit_transfer(source, target_model, mapping, submodule_mapping)
     _print_report(
         model_path,
         weights_path,
@@ -534,6 +628,7 @@ def audit(model_path: Path, weights_path: Path, data_path: Path, semantic_map_pa
         source,
         target_model,
         mapping,
+        submodule_mapping,
         ambiguous,
         baseline_valid,
         baseline_issues,
@@ -564,12 +659,17 @@ def _parse_args() -> argparse.Namespace:
         type=Path,
         help="Optional complete JSON mapping of target layer indices to source indices or null.",
     )
+    parser.add_argument(
+        "--submodule-map",
+        type=Path,
+        help="Optional JSON mapping of reviewed target submodule prefixes to source submodule prefixes.",
+    )
     return parser.parse_args()
 
 
 def main() -> None:
     args = _parse_args()
-    audit(args.model, args.weights, args.data, args.semantic_map)
+    audit(args.model, args.weights, args.data, args.semantic_map, args.submodule_map)
 
 
 if __name__ == "__main__":
