@@ -40,6 +40,7 @@ The scale encoded in the model filename must match the checkpoint scale. For exa
 | `--weights` | Local pretrained YOLO detection checkpoint. |
 | `--data` | Target dataset YAML used to obtain the number of classes and input channels. |
 | `--semantic-map` | Optional JSON file defining the correspondence from every target layer to its source layer. |
+| `--submodule-map` | Optional JSON file defining reviewed target-to-source submodule-prefix correspondence. |
 
 ## How the audit works
 
@@ -50,7 +51,8 @@ The utility:
 3. constructs the requested ablation using the same dataset class count and input channels;
 4. runs the actual Ultralytics model-loading operation on the temporary target models;
 5. verifies which tensors were copied by the loader;
-6. compares actual loading with the inferred or supplied semantic layer correspondence.
+6. compares actual loading with the inferred or supplied semantic layer correspondence;
+7. applies any explicitly reviewed submodule correspondence before the top-level layer correspondence.
 
 By default, the tool infers an order-preserving correspondence between top-level layers with matching module types. If more than one equally suitable correspondence exists, it reports the alignment as `AMBIGUOUS` and does not report semantic metrics.
 
@@ -100,6 +102,29 @@ For illustration, a complete map for a hypothetical three-layer target could be:
 
 Every target layer must be present, each non-null source layer may be used only once, and mapped source and target layers must have matching module types.
 
+## Explicit submodule maps
+
+Use `--submodule-map` when a replacement layer contains individually reviewed submodules that correspond to parts of the source layer:
+
+```text
+python "ablation_code/audit_pretrained_transfer.py" --model "path/to/yolo11m-ablation.yaml" --weights "path/to/yolo11m.pt" --data "path/to/data.yaml" --semantic-map "path/to/layer-map.json" --submodule-map "path/to/submodule-map.json"
+```
+
+For example, a replacement at layer 9 may retain compatible `cv1` and `cv2` bookend projections while introducing a new internal operation:
+
+```json
+{
+  "model.9.cv1": "model.9.cv1",
+  "model.9.cv2": "model.9.cv2"
+}
+```
+
+Submodule mappings take precedence over the enclosing layer mapping. Therefore, layer 9 can remain mapped to `null`, while the two explicitly mapped submodules receive correspondence and every unmapped child remains new.
+
+Both prefixes must exist in `named_modules()`, mapped submodules must have matching types, prefixes may not overlap, and a source submodule may be used only once. Parameter-name or shape differences remain visible in the normal audit results.
+
+An explicit mapping records a reviewed correspondence claim. Matching module types and tensor shapes alone do not prove conceptual equivalence, particularly when a fusion layer receives features produced by a changed internal operation.
+
 ### Included SPPF examples
 
 Two SPPF-removal semantic-map examples are included:
@@ -138,6 +163,7 @@ When reporting an audit, record:
 - the checkpoint name and source;
 - the dataset YAML and class count;
 - whether an explicit semantic map was used;
+- whether an explicit submodule map was used;
 - the complete command and terminal output.
 
 Checkpoints, datasets, and local experiment artefacts are not distributed with this utility.
