@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import math
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -21,6 +23,7 @@ __all__ = (
     "CIB",
     "DFL",
     "ELAN1",
+    "LDAAQU",
     "PSA",
     "SPP",
     "SPPELAN",
@@ -230,6 +233,218 @@ class SPPF(nn.Module):
         y = [self.cv1(x)]
         y.extend(self.m(y[-1]) for _ in range(3))
         return self.cv2(torch.cat(y, 1))
+
+
+class _LDAAQULayerNorm(nn.Module):
+    """Apply LayerNorm over channels of an NCHW tensor."""
+
+    def __init__(self, channels: int):
+        """Initialize channel-wise LayerNorm."""
+        super().__init__()
+        self.norm = nn.LayerNorm(channels)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Normalize channels while preserving NCHW layout."""
+        return self.norm(x.permute(0, 2, 3, 1)).permute(0, 3, 1, 2).contiguous()
+
+
+class LDAAQU(nn.Module):
+    """Upsample features using Local Deformable Attention Adaptive Query-guided Upsampling.
+
+    Implements LDA-AQU from Du et al. (2024), based on the authors' Apache-2.0 reference implementation pinned at
+    https://github.com/duzw9311/LDA-AQU/blob/a2da3decf222d21dca0b7a3feb84807f76ffa09c/mmdet/models/necks/fpn_lau.py.
+    This is a clean-room native-PyTorch adaptation for Ultralytics without MMCV, timm, einops, or NumPy dependencies.
+    """
+
+    def __init__(
+        self,
+        c1: int,
+        reduction_factor: int = 4,
+        num_heads: int = 1,
+        scale_factor: int = 2,
+        encoder_kernel: int = 3,
+        up_kernel: int = 3,
+        offset_groups: int = 2,
+        range_factor: float = 11,
+        rpb: bool = True,
+        query_mode: str = "bilinear",
+    ):
+        """Initialize LDA-AQU with channel-reduced attention and grouped deformable sampling."""
+        super().__init__()
+        structural_args = {
+            "c1": c1,
+            "reduction_factor": reduction_factor,
+            "num_heads": num_heads,
+            "scale_factor": scale_factor,
+            "encoder_kernel": encoder_kernel,
+            "up_kernel": up_kernel,
+            "offset_groups": offset_groups,
+        }
+        for name, value in structural_args.items():
+            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                raise ValueError(f"{name} must be a positive integer, got {value!r}")
+        if encoder_kernel % 2 == 0 or up_kernel % 2 == 0:
+            raise ValueError("encoder_kernel and up_kernel must be odd positive integers")
+        if (
+            isinstance(range_factor, bool)
+            or not isinstance(range_factor, (int, float))
+            or not math.isfinite(range_factor)
+            or range_factor <= 0
+        ):
+            raise ValueError(f"range_factor must be a positive number, got {range_factor!r}")
+        if not isinstance(rpb, bool):
+            raise ValueError(f"rpb must be a bool, got {rpb!r}")
+        if not isinstance(query_mode, str) or query_mode not in {"bilinear", "nearest"}:
+            raise ValueError(f"query_mode must be 'bilinear' or 'nearest', got {query_mode!r}")
+        if c1 % reduction_factor:
+            raise ValueError(f"c1 ({c1}) must be divisible by reduction_factor ({reduction_factor})")
+
+        hidden_dim = c1 // reduction_factor
+        if hidden_dim % num_heads:
+            raise ValueError(f"reduced channels ({hidden_dim}) must be divisible by num_heads ({num_heads})")
+        if hidden_dim % offset_groups:
+            raise ValueError(f"reduced channels ({hidden_dim}) must be divisible by offset_groups ({offset_groups})")
+        if c1 % num_heads:
+            raise ValueError(f"c1 ({c1}) must be divisible by num_heads ({num_heads})")
+        if c1 % offset_groups:
+            raise ValueError(f"c1 ({c1}) must be divisible by offset_groups ({offset_groups})")
+
+        self.c1 = c1
+        self.hidden_dim = hidden_dim
+        self.num_heads = num_heads
+        self.scale_factor = scale_factor
+        self.up_kernel = up_kernel
+        self.offset_groups = offset_groups
+        self.range_factor = float(range_factor)
+        self.rpb = rpb
+        self.query_mode = query_mode
+        self.attn_dim = hidden_dim // num_heads
+        self.scale = self.attn_dim**-0.5
+
+        self.proj_q = nn.Conv2d(c1, hidden_dim, kernel_size=1, bias=False)
+        self.proj_k = nn.Conv2d(c1, hidden_dim, kernel_size=1, bias=False)
+        group_channels = hidden_dim // offset_groups
+        self.conv_offset = nn.Sequential(
+            nn.Conv2d(group_channels, group_channels, kernel_size=3, padding=1, groups=group_channels, bias=False),
+            _LDAAQULayerNorm(group_channels),
+            nn.GELU(),
+            nn.Conv2d(
+                group_channels,
+                2 * up_kernel**2,
+                kernel_size=encoder_kernel,
+                padding=encoder_kernel // 2,
+            ),
+        )
+        self.layer_norm = _LDAAQULayerNorm(c1)
+
+        pad = (up_kernel - 1) // 2
+        base = torch.arange(-pad, pad + 1, dtype=torch.float32)
+        base_y = base.repeat_interleave(up_kernel)
+        base_x = base.repeat(up_kernel)
+        base_offset = torch.stack((base_y, base_x), dim=1).reshape(1, -1, 1, 1)
+        self.register_buffer("base_offset", base_offset, persistent=False)
+
+        if rpb:
+            self.relative_position_bias_table = nn.Parameter(
+                torch.zeros(1, num_heads, 1, up_kernel**2, self.attn_dim)
+            )
+
+        self._reset_parameters()
+
+    def _reset_parameters(self) -> None:
+        """Apply the source initialization, including a zero-initialized final offset predictor."""
+        for module in self.modules():
+            if isinstance(module, nn.Conv2d):
+                nn.init.xavier_uniform_(module.weight)
+                if module.bias is not None:
+                    nn.init.zeros_(module.bias)
+            elif isinstance(module, nn.LayerNorm):
+                nn.init.ones_(module.weight)
+                nn.init.zeros_(module.bias)
+        if self.rpb:
+            nn.init.trunc_normal_(self.relative_position_bias_table, std=0.02)
+        nn.init.zeros_(self.conv_offset[-1].weight)
+        nn.init.zeros_(self.conv_offset[-1].bias)
+
+    def _sample_features(
+        self, x: torch.Tensor, out_h: int, out_w: int, offset: torch.Tensor
+    ) -> torch.Tensor:
+        """Sample grouped features at the learned local-neighbour coordinates."""
+        batch_groups, _, _, _ = x.shape
+        kernel = self.up_kernel
+        rows = torch.arange(out_h, device=offset.device, dtype=offset.dtype)
+        cols = torch.arange(out_w, device=offset.device, dtype=offset.dtype)
+        rows, cols = torch.meshgrid(rows, cols, indexing="ij")
+        output_positions = torch.stack((rows, cols), dim=-1).reshape(1, 1, out_h, 1, out_w, 2)
+
+        offsets = offset.reshape(batch_groups, kernel, kernel, 2, out_h, out_w)
+        offsets = offsets.permute(0, 1, 4, 2, 5, 3)
+        coordinates = offsets + output_positions
+        coordinates = coordinates.contiguous().reshape(batch_groups, kernel * out_h, kernel * out_w, 2)
+
+        height_denominator = max(out_h - 1, 1)
+        width_denominator = max(out_w - 1, 1)
+        grid_y = 2.0 * coordinates[..., 0] / height_denominator - 1.0
+        grid_x = 2.0 * coordinates[..., 1] / width_denominator - 1.0
+        grid = torch.stack((grid_x, grid_y), dim=-1)
+
+        sampled = F.grid_sample(x, grid, mode="bilinear", padding_mode="zeros", align_corners=True)
+        _, channels, _, _ = sampled.shape
+        sampled = sampled.reshape(batch_groups, channels, kernel, out_h, kernel, out_w)
+        return sampled.permute(0, 2, 4, 1, 3, 5).reshape(
+            batch_groups, kernel**2, channels, out_h, out_w
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Reassemble deformably sampled values using query-key attention weights."""
+        if x.ndim != 4:
+            raise ValueError(f"LDAAQU expects a 4D NCHW tensor, got shape {tuple(x.shape)}")
+        batch, channels, height, width = x.shape
+        if channels != self.c1:
+            raise ValueError(f"LDAAQU expected {self.c1} input channels, got {channels}")
+
+        out_h, out_w = height * self.scale_factor, width * self.scale_factor
+        values = x
+        normalized = self.layer_norm(x)
+        q = self.proj_q(normalized)
+        k = self.proj_k(normalized)
+
+        if self.query_mode == "bilinear":
+            q = F.interpolate(q, size=(out_h, out_w), mode="bilinear", align_corners=True)
+        else:
+            q = F.interpolate(q, size=(out_h, out_w), mode="nearest")
+
+        q_offset = q.reshape(batch * self.offset_groups, -1, out_h, out_w)
+        predicted_offset = self.conv_offset(q_offset)
+        offset = predicted_offset.tanh() * self.range_factor + self.base_offset.to(predicted_offset.dtype)
+
+        k = k.reshape(batch * self.offset_groups, self.hidden_dim // self.offset_groups, height, width)
+        values = values.reshape(batch * self.offset_groups, channels // self.offset_groups, height, width)
+        k = self._sample_features(k, out_h, out_w, offset)
+        values = self._sample_features(values, out_h, out_w, offset)
+
+        neighbours = self.up_kernel**2
+        q = q.reshape(batch, self.num_heads, self.attn_dim, out_h * out_w)
+        q = q.permute(0, 1, 3, 2).unsqueeze(3)
+
+        k = k.reshape(batch, self.offset_groups, neighbours, self.hidden_dim // self.offset_groups, out_h, out_w)
+        k = k.permute(0, 4, 5, 2, 1, 3).reshape(batch, out_h * out_w, neighbours, self.hidden_dim)
+        k = k.reshape(batch, out_h * out_w, neighbours, self.num_heads, self.attn_dim)
+        k = k.permute(0, 3, 1, 2, 4)
+
+        value_head_dim = channels // self.num_heads
+        values = values.reshape(
+            batch, self.offset_groups, neighbours, channels // self.offset_groups, out_h, out_w
+        )
+        values = values.permute(0, 4, 5, 2, 1, 3).reshape(batch, out_h * out_w, neighbours, channels)
+        values = values.reshape(batch, out_h * out_w, neighbours, self.num_heads, value_head_dim)
+        values = values.permute(0, 3, 1, 2, 4)
+
+        if self.rpb:
+            k = k + self.relative_position_bias_table
+        attention = ((q * self.scale) @ k.transpose(-1, -2)).softmax(dim=-1)
+        output = (attention @ values).squeeze(3)
+        return output.permute(0, 1, 3, 2).reshape(batch, channels, out_h, out_w)
 
 
 class C1(nn.Module):
