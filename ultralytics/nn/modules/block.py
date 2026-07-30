@@ -25,6 +25,7 @@ __all__ = (
     "SPP",
     "SPPELAN",
     "SPPF",
+    "DySamplePlus",
     "AConv",
     "ADown",
     "Attention",
@@ -230,6 +231,79 @@ class SPPF(nn.Module):
         y = [self.cv1(x)]
         y.extend(self.m(y[-1]) for _ in range(3))
         return self.cv2(torch.cat(y, 1))
+
+
+class DySamplePlus(nn.Module):
+    """LP-style DySample+ upsampling with grouped offsets and a learned dynamic scope.
+
+    This is the DySample+ variant from "Learning to Upsample by Learning to Sample"
+    (https://arxiv.org/abs/2308.15085), adapted from the authors' implementation at
+    https://github.com/tiny-smart/dysample/blob/81a1de5caa95d55a0f5488425fa53ec7ef47f8f0/dysample.py.
+    """
+
+    def __init__(self, c1: int, scale: int = 2, groups: int = 4):
+        """Initialize source-faithful LP-style DySample+.
+
+        Args:
+            c1 (int): Number of input and output channels.
+            scale (int): Integer spatial upsampling factor of at least 2.
+            groups (int): Number of channel groups sharing sampling locations.
+        """
+        super().__init__()
+        if type(scale) is not int or scale < 2:
+            raise ValueError(f"scale must be an integer of at least 2, but received {scale}")
+        if type(groups) is not int or groups < 1:
+            raise ValueError(f"groups must be a positive integer, but received {groups}")
+        if type(c1) is not int or c1 < groups or c1 % groups:
+            raise ValueError(f"c1 must be an integer divisible by groups and at least groups, but received {c1}")
+
+        self.scale = scale
+        self.groups = groups
+        offset_channels = 2 * groups * scale**2
+        self.offset = nn.Conv2d(c1, offset_channels, 1)
+        self.scope = nn.Conv2d(c1, offset_channels, 1, bias=False)
+        nn.init.normal_(self.offset.weight, mean=0.0, std=0.001)
+        nn.init.zeros_(self.offset.bias)
+        nn.init.zeros_(self.scope.weight)
+        self.register_buffer("init_pos", self._make_initial_positions(), persistent=True)
+
+    def _make_initial_positions(self) -> torch.Tensor:
+        """Create the fixed sub-pixel positions that make zero offsets equivalent to bilinear upsampling."""
+        positions = torch.arange((-self.scale + 1) / 2, (self.scale - 1) / 2 + 1) / self.scale
+        position_y, position_x = torch.meshgrid(positions, positions, indexing="ij")
+        return torch.stack((position_x, position_y)).repeat(1, self.groups, 1).reshape(1, -1, 1, 1)
+
+    def _sample(self, x: torch.Tensor, offset: torch.Tensor) -> torch.Tensor:
+        """Resample grouped input features at the dynamically generated locations."""
+        batch, _, height, width = offset.shape
+        offset = offset.view(batch, 2, -1, height, width)
+        coords_y, coords_x = torch.meshgrid(
+            torch.arange(height, device=x.device, dtype=x.dtype) + 0.5,
+            torch.arange(width, device=x.device, dtype=x.dtype) + 0.5,
+            indexing="ij",
+        )
+        coords = torch.stack((coords_x, coords_y)).unsqueeze(0).unsqueeze(2)
+        normalizer = x.new_tensor((width, height)).view(1, 2, 1, 1, 1)
+        coords = 2 * (coords + offset) / normalizer - 1
+        coords = F.pixel_shuffle(coords.view(batch, -1, height, width), self.scale)
+        coords = (
+            coords.view(batch, 2, self.groups, self.scale * height, self.scale * width)
+            .permute(0, 2, 3, 4, 1)
+            .contiguous()
+            .flatten(0, 1)
+        )
+        return F.grid_sample(
+            x.reshape(batch * self.groups, -1, height, width),
+            coords,
+            mode="bilinear",
+            padding_mode="border",
+            align_corners=False,
+        ).view(batch, -1, self.scale * height, self.scale * width)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Upsample input features using LP-style offsets modulated by a learned dynamic scope."""
+        offset = self.offset(x) * self.scope(x).sigmoid() * 0.5 + self.init_pos
+        return self._sample(x, offset)
 
 
 class C1(nn.Module):
