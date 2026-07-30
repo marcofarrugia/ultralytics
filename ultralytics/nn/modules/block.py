@@ -31,6 +31,7 @@ __all__ = (
     "BNContrastiveHead",
     "Bottleneck",
     "BottleneckCSP",
+    "CARAFE",
     "C2f",
     "C2fAttn",
     "C2fCIB",
@@ -230,6 +231,106 @@ class SPPF(nn.Module):
         y = [self.cv1(x)]
         y.extend(self.m(y[-1]) for _ in range(3))
         return self.cv2(torch.cat(y, 1))
+
+
+class CARAFE(nn.Module):
+    """Content-Aware ReAssembly of FEatures upsampling layer."""
+
+    def __init__(
+        self,
+        c1: int,
+        scale_factor: int = 2,
+        up_kernel: int = 5,
+        up_group: int = 1,
+        encoder_kernel: int = 3,
+        encoder_dilation: int = 1,
+        compressed_channels: int = 64,
+    ):
+        """Initialize CARAFE with content-aware kernel prediction and feature reassembly."""
+        super().__init__()
+        arguments = {
+            "c1": c1,
+            "scale_factor": scale_factor,
+            "up_kernel": up_kernel,
+            "up_group": up_group,
+            "encoder_kernel": encoder_kernel,
+            "encoder_dilation": encoder_dilation,
+            "compressed_channels": compressed_channels,
+        }
+        for name, value in arguments.items():
+            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                raise ValueError(f"{name} must be a positive integer, but got {value!r}.")
+        if up_kernel % 2 == 0:
+            raise ValueError(f"up_kernel must be odd, but got {up_kernel}.")
+        if encoder_kernel % 2 == 0:
+            raise ValueError(f"encoder_kernel must be odd, but got {encoder_kernel}.")
+        if c1 % up_group:
+            raise ValueError(f"c1 ({c1}) must be divisible by up_group ({up_group}).")
+
+        self.c1 = c1
+        self.scale_factor = scale_factor
+        self.up_kernel = up_kernel
+        self.up_group = up_group
+        self.encoder_kernel = encoder_kernel
+        self.encoder_dilation = encoder_dilation
+        self.compressed_channels = compressed_channels
+
+        self.channel_compressor = nn.Conv2d(c1, compressed_channels, kernel_size=1)
+        self.content_encoder = nn.Conv2d(
+            compressed_channels,
+            scale_factor**2 * up_kernel**2 * up_group,
+            kernel_size=encoder_kernel,
+            padding=encoder_dilation * (encoder_kernel - 1) // 2,
+            dilation=encoder_dilation,
+            groups=1,
+        )
+        self.init_weights()
+
+    def init_weights(self):
+        """Initialize the compressor and content encoder following the official CARAFE implementation."""
+        nn.init.xavier_uniform_(self.channel_compressor.weight)
+        nn.init.normal_(self.content_encoder.weight, mean=0.0, std=0.001)
+        if self.channel_compressor.bias is not None:
+            nn.init.zeros_(self.channel_compressor.bias)
+        if self.content_encoder.bias is not None:
+            nn.init.zeros_(self.content_encoder.bias)
+
+    def _predict_kernels(self, x: torch.Tensor) -> torch.Tensor:
+        """Predict normalized reassembly kernels for every low-resolution position."""
+        b, _, h, w = x.shape
+        kernels = self.content_encoder(self.channel_compressor(x))
+        kernels = kernels.reshape(
+            b,
+            self.up_group,
+            self.up_kernel**2,
+            self.scale_factor**2,
+            h,
+            w,
+        )
+        return kernels.softmax(dim=2)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Upsample a feature map using content-aware weighted reassembly."""
+        b, c, h, w = x.shape
+        kernels = self._predict_kernels(x)
+
+        neighborhoods = F.unfold(
+            x,
+            kernel_size=self.up_kernel,
+            padding=self.up_kernel // 2,
+        )
+        neighborhoods = neighborhoods.reshape(
+            b,
+            self.up_group,
+            c // self.up_group,
+            self.up_kernel**2,
+            h,
+            w,
+        )
+
+        reassembled = torch.einsum("bgckhw,bgkshw->bgcshw", neighborhoods, kernels)
+        reassembled = reassembled.reshape(b, c * self.scale_factor**2, h, w)
+        return F.pixel_shuffle(reassembled, self.scale_factor)
 
 
 class C1(nn.Module):
