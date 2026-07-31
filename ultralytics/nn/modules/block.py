@@ -20,6 +20,7 @@ __all__ = (
     "C3TR",
     "CIB",
     "DFL",
+    "DepthwiseSeparablePixelShuffleICNR",
     "ELAN1",
     "PSA",
     "SPP",
@@ -230,6 +231,58 @@ class SPPF(nn.Module):
         y = [self.cv1(x)]
         y.extend(self.m(y[-1]) for _ in range(3))
         return self.cv2(torch.cat(y, 1))
+
+
+class DepthwiseSeparablePixelShuffleICNR(nn.Module):
+    """Depthwise-separable sub-pixel upsampling with identity-preserving ICNR initialization.
+
+    Pixel Shuffle follows Shi et al. (2016), https://arxiv.org/abs/1609.05158. The ICNR initialization
+    principle follows Aitken et al. (2017), https://arxiv.org/abs/1707.02937. This module is a local
+    depthwise-separable adaptation whose identity base reproduces nearest-neighbor upsampling at initialization.
+    """
+
+    def __init__(self, c1: int, scale: int = 2, kernel_size: int = 3):
+        """Initialize a channel-preserving depthwise-separable Pixel Shuffle upsampler.
+
+        Args:
+            c1 (int): Number of input and output channels.
+            scale (int): Integer spatial upsampling factor greater than one.
+            kernel_size (int): Positive odd depthwise kernel size.
+        """
+        super().__init__()
+        if not isinstance(c1, int) or isinstance(c1, bool) or c1 <= 0:
+            raise ValueError(f"c1 must be a positive integer, but received {c1!r}")
+        if not isinstance(scale, int) or isinstance(scale, bool) or scale < 2:
+            raise ValueError(f"scale must be an integer greater than one, but received {scale!r}")
+        if (
+            not isinstance(kernel_size, int)
+            or isinstance(kernel_size, bool)
+            or kernel_size <= 0
+            or kernel_size % 2 == 0
+        ):
+            raise ValueError(f"kernel_size must be a positive odd integer, but received {kernel_size!r}")
+
+        self.c1 = c1
+        self.scale = scale
+        self.kernel_size = kernel_size
+        self.depthwise = nn.Conv2d(c1, c1, kernel_size, padding=kernel_size // 2, groups=c1, bias=False)
+        self.pointwise = nn.Conv2d(c1, c1 * scale**2, 1, bias=False)
+        self.pixel_shuffle = nn.PixelShuffle(scale)
+        self.reset_parameters()
+
+    def reset_parameters(self) -> None:
+        """Initialize the block to exactly reproduce nearest-neighbor upsampling."""
+        with torch.no_grad():
+            self.depthwise.weight.zero_()
+            self.depthwise.weight[:, 0, self.kernel_size // 2, self.kernel_size // 2] = 1.0
+
+            identity = torch.eye(self.c1, dtype=self.pointwise.weight.dtype, device=self.pointwise.weight.device)
+            identity = identity[:, :, None, None]
+            self.pointwise.weight.copy_(identity.repeat_interleave(self.scale**2, dim=0))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Apply depthwise filtering, pointwise phase generation, and sub-pixel rearrangement."""
+        return self.pixel_shuffle(self.pointwise(self.depthwise(x)))
 
 
 class C1(nn.Module):
