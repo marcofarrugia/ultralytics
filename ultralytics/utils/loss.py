@@ -105,6 +105,56 @@ class DFLoss(nn.Module):
         ).mean(-1, keepdim=True)
 
 
+def bbox_cfiou_loss(
+    pred_bboxes: torch.Tensor, target_bboxes: torch.Tensor, eps: float = 1e-7
+) -> torch.Tensor:
+    """Compute Corner-Point and Foreground-Area IoU loss for matched boxes in xyxy format.
+
+    Implements Equation 13 from Cai et al., "Corner-Point and Foreground-Area IoU Loss: Better
+    Localization of Small Objects in Bounding Box Regression" (Sensors, 2023). In the foreground
+    term, foreground denotes the target bounding-box area rather than a segmentation mask.
+    """
+    compute_dtype = torch.float32 if pred_bboxes.dtype in {torch.float16, torch.bfloat16} else pred_bboxes.dtype
+    pred_bboxes = pred_bboxes.to(dtype=compute_dtype)
+    target_bboxes = target_bboxes.to(dtype=compute_dtype)
+    pred_x1, pred_y1, pred_x2, pred_y2 = pred_bboxes.chunk(4, dim=-1)
+    target_x1, target_y1, target_x2, target_y2 = target_bboxes.chunk(4, dim=-1)
+
+    iou = bbox_iou(pred_bboxes, target_bboxes, xywh=False, eps=eps)
+
+    enclosing_x1 = pred_x1.minimum(target_x1)
+    enclosing_y1 = pred_y1.minimum(target_y1)
+    enclosing_x2 = pred_x2.maximum(target_x2)
+    enclosing_y2 = pred_y2.maximum(target_y2)
+    enclosing_width = enclosing_x2 - enclosing_x1
+    enclosing_height = enclosing_y2 - enclosing_y1
+    enclosing_diagonal_squared = enclosing_width.square() + enclosing_height.square()
+
+    # The four corner distances simplify to twice the sum of the squared xyxy coordinate differences.
+    corner_distance_squared = 2.0 * (
+        (pred_x1 - target_x1).square()
+        + (pred_x2 - target_x2).square()
+        + (pred_y1 - target_y1).square()
+        + (pred_y2 - target_y2).square()
+    )
+    corner_penalty = corner_distance_squared / (4.0 * enclosing_diagonal_squared).clamp_min(eps)
+
+    pred_area = (pred_x2 - pred_x1) * (pred_y2 - pred_y1)
+    target_area = (target_x2 - target_x1) * (target_y2 - target_y1)
+    enclosing_area = enclosing_width * enclosing_height
+    enclosing_area_denominator = enclosing_area.clamp_min(eps)
+    size_difference_penalty = ((pred_area - target_area) / enclosing_area_denominator).square()
+    enclosing_foreground_penalty = ((enclosing_area - target_area) / enclosing_area_denominator).square()
+
+    pred_center_x = (pred_x1 + pred_x2) / 2
+    pred_center_y = (pred_y1 + pred_y2) / 2
+    target_center_x = (target_x1 + target_x2) / 2
+    target_center_y = (target_y1 + target_y2) / 2
+    centers_equal = (pred_center_x == target_center_x) & (pred_center_y == target_center_y)
+    foreground_penalty = torch.where(centers_equal, enclosing_foreground_penalty, size_difference_penalty)
+    return 1.0 - iou + corner_penalty + foreground_penalty
+
+
 class BboxLoss(nn.Module):
     """Criterion class for computing training losses for bounding boxes."""
 
@@ -112,6 +162,10 @@ class BboxLoss(nn.Module):
         """Initialize the BboxLoss module with regularization maximum and DFL settings."""
         super().__init__()
         self.dfl_loss = DFLoss(reg_max) if reg_max > 1 else None
+
+    def _bbox_regression_loss(self, pred_bboxes: torch.Tensor, target_bboxes: torch.Tensor) -> torch.Tensor:
+        """Return the baseline per-box CIoU regression loss."""
+        return 1.0 - bbox_iou(pred_bboxes, target_bboxes, xywh=False, CIoU=True)
 
     def forward(
         self,
@@ -125,10 +179,8 @@ class BboxLoss(nn.Module):
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Compute IoU and DFL losses for bounding boxes."""
         weight = target_scores.sum(-1)[fg_mask].unsqueeze(-1)
-        # Compute IoU (similarity) between predicted and target boxes
-        iou = bbox_iou(pred_bboxes[fg_mask], target_bboxes[fg_mask], xywh=False, CIoU=True)
-        # Convert IoU to loss: weighted sum over positives and divide by target_scores_sum to get weighted mean.
-        loss_iou = ((1.0 - iou) * weight).sum() / target_scores_sum
+        bbox_loss = self._bbox_regression_loss(pred_bboxes[fg_mask], target_bboxes[fg_mask])
+        loss_iou = (bbox_loss * weight).sum() / target_scores_sum
 
         # DFL loss
         if self.dfl_loss:
@@ -139,6 +191,14 @@ class BboxLoss(nn.Module):
             loss_dfl = torch.tensor(0.0).to(pred_dist.device)
 
         return loss_iou, loss_dfl
+
+
+class CFIoUBboxLoss(BboxLoss):
+    """Bounding-box criterion using CFIoU for regression while retaining the baseline DFL path."""
+
+    def _bbox_regression_loss(self, pred_bboxes: torch.Tensor, target_bboxes: torch.Tensor) -> torch.Tensor:
+        """Return the per-box CFIoU regression loss."""
+        return bbox_cfiou_loss(pred_bboxes, target_bboxes)
 
 
 class RotatedBboxLoss(BboxLoss):
@@ -302,6 +362,15 @@ class v8DetectionLoss:
         loss[2] *= self.hyp.dfl  # dfl gain
 
         return loss * batch_size, loss.detach()  # loss(box, cls, dfl)
+
+
+class v8DetectionCFIoULoss(v8DetectionLoss):
+    """Detection criterion replacing only positive-box CIoU regression with CFIoU."""
+
+    def __init__(self, model, tal_topk: int = 10):
+        """Initialize detection loss with unchanged TAL, DFL, weighting, and gains."""
+        super().__init__(model, tal_topk)
+        self.bbox_loss = CFIoUBboxLoss(self.reg_max).to(self.device)
 
 
 class v8SegmentationLoss(v8DetectionLoss):
