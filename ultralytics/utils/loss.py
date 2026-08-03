@@ -105,6 +105,55 @@ class DFLoss(nn.Module):
         ).mean(-1, keepdim=True)
 
 
+# Adapted from the implementation released by Can Liu et al. for:
+# "Powerful-IoU: More straightforward and faster bounding box regression loss with a nonmonotonic focusing mechanism."
+# DOI: https://doi.org/10.1016/j.neunet.2023.11.041
+# Source: https://github.com/fppccc/Powerful-IoU/blob/bb75fccd9cbf349a746d777b1f0c2f700cb25dc3/YOLOv8/piou.py
+# The authors' README explicitly directs Ultralytics users to copy piou.py into the loss path.
+# Changes: return only PIoU v2 loss, reuse bbox_iou, remove mode switches and unused enclosing-box terms,
+# guard target-size denominators, and promote low-precision inputs for stable division and exponentials.
+def bbox_piou_v2_loss(
+    pred_bboxes: torch.Tensor,
+    target_bboxes: torch.Tensor,
+    xywh: bool = True,
+    focusing_lambda: float = 1.3,
+    eps: float = 1e-7,
+) -> torch.Tensor:
+    """Calculate Powerful-IoU v2 loss between predicted and target bounding boxes."""
+    calculation_dtype = (
+        torch.float32 if pred_bboxes.dtype in (torch.float16, torch.bfloat16) else pred_bboxes.dtype
+    )
+    pred_bboxes = pred_bboxes.to(calculation_dtype)
+    target_bboxes = target_bboxes.to(calculation_dtype)
+    iou = bbox_iou(pred_bboxes, target_bboxes, xywh=xywh)
+
+    if xywh:
+        (px, py, pw, ph), (tx, ty, tw, th) = pred_bboxes.chunk(4, -1), target_bboxes.chunk(4, -1)
+        pred_x1, pred_x2, pred_y1, pred_y2 = px - pw / 2, px + pw / 2, py - ph / 2, py + ph / 2
+        target_x1, target_x2, target_y1, target_y2 = tx - tw / 2, tx + tw / 2, ty - th / 2, ty + th / 2
+    else:
+        pred_x1, pred_y1, pred_x2, pred_y2 = pred_bboxes.chunk(4, -1)
+        target_x1, target_y1, target_x2, target_y2 = target_bboxes.chunk(4, -1)
+
+    pred_left, pred_right = pred_x1.minimum(pred_x2), pred_x1.maximum(pred_x2)
+    pred_top, pred_bottom = pred_y1.minimum(pred_y2), pred_y1.maximum(pred_y2)
+    target_left, target_right = target_x1.minimum(target_x2), target_x1.maximum(target_x2)
+    target_top, target_bottom = target_y1.minimum(target_y2), target_y1.maximum(target_y2)
+    target_width = (target_right - target_left).abs().clamp_min(eps)
+    target_height = (target_bottom - target_top).abs().clamp_min(eps)
+
+    edge_penalty = (
+        (pred_left - target_left).abs() / target_width
+        + (pred_right - target_right).abs() / target_width
+        + (pred_top - target_top).abs() / target_height
+        + (pred_bottom - target_bottom).abs() / target_height
+    ) / 4
+    piou_v1_loss = 2.0 - iou - torch.exp(-edge_penalty.square())
+    quality = torch.exp(-edge_penalty)
+    focused_quality = focusing_lambda * quality
+    return 3.0 * focused_quality * torch.exp(-focused_quality.square()) * piou_v1_loss
+
+
 class BboxLoss(nn.Module):
     """Criterion class for computing training losses for bounding boxes."""
 
@@ -112,6 +161,10 @@ class BboxLoss(nn.Module):
         """Initialize the BboxLoss module with regularization maximum and DFL settings."""
         super().__init__()
         self.dfl_loss = DFLoss(reg_max) if reg_max > 1 else None
+
+    def _bbox_regression_loss(self, pred_bboxes: torch.Tensor, target_bboxes: torch.Tensor) -> torch.Tensor:
+        """Return the baseline per-box CIoU regression loss."""
+        return 1.0 - bbox_iou(pred_bboxes, target_bboxes, xywh=False, CIoU=True)
 
     def forward(
         self,
@@ -125,10 +178,8 @@ class BboxLoss(nn.Module):
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Compute IoU and DFL losses for bounding boxes."""
         weight = target_scores.sum(-1)[fg_mask].unsqueeze(-1)
-        # Compute IoU (similarity) between predicted and target boxes
-        iou = bbox_iou(pred_bboxes[fg_mask], target_bboxes[fg_mask], xywh=False, CIoU=True)
-        # Convert IoU to loss: weighted sum over positives and divide by target_scores_sum to get weighted mean.
-        loss_iou = ((1.0 - iou) * weight).sum() / target_scores_sum
+        bbox_loss = self._bbox_regression_loss(pred_bboxes[fg_mask], target_bboxes[fg_mask])
+        loss_iou = (bbox_loss * weight).sum() / target_scores_sum
 
         # DFL loss
         if self.dfl_loss:
@@ -139,6 +190,14 @@ class BboxLoss(nn.Module):
             loss_dfl = torch.tensor(0.0).to(pred_dist.device)
 
         return loss_iou, loss_dfl
+
+
+class PIoUv2BboxLoss(BboxLoss):
+    """Bounding-box criterion using PIoU v2 while retaining the baseline DFL path."""
+
+    def _bbox_regression_loss(self, pred_bboxes: torch.Tensor, target_bboxes: torch.Tensor) -> torch.Tensor:
+        """Return per-box PIoU v2 regression loss with the paper's fixed focusing coefficient."""
+        return bbox_piou_v2_loss(pred_bboxes, target_bboxes, xywh=False, focusing_lambda=1.3)
 
 
 class RotatedBboxLoss(BboxLoss):
@@ -302,6 +361,15 @@ class v8DetectionLoss:
         loss[2] *= self.hyp.dfl  # dfl gain
 
         return loss * batch_size, loss.detach()  # loss(box, cls, dfl)
+
+
+class v8DetectionPIoUv2Loss(v8DetectionLoss):
+    """Detection criterion replacing only positive-box CIoU regression with PIoU v2."""
+
+    def __init__(self, model, tal_topk: int = 10):
+        """Initialize detection loss with unchanged TAL, DFL, weighting, and gains."""
+        super().__init__(model, tal_topk)
+        self.bbox_loss = PIoUv2BboxLoss(self.reg_max).to(self.device)
 
 
 class v8SegmentationLoss(v8DetectionLoss):
