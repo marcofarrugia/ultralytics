@@ -105,6 +105,56 @@ class DFLoss(nn.Module):
         ).mean(-1, keepdim=True)
 
 
+# Adapted from the Dynamic InterpIoU implementation by Haoyuan Liu and Hiroshi Watanabe:
+# "InterpIoU: Robust bounding box regression loss within an interpolation-based IoU framework."
+# DOI: https://doi.org/10.1016/j.neucom.2025.132230
+# Source: https://github.com/NuayHL/interpiou/blob/9d98834d9ed2edfdd9c2f821130eb7a0f8c2463d/interpiou.py
+# Licensed under CC BY 4.0: https://creativecommons.org/licenses/by/4.0/
+# Changes: renamed the function/parameters and integrated it with Ultralytics xyxy bounding-box tensors.
+def bbox_dynamic_interpiou(
+    pred_bboxes: torch.Tensor,
+    target_bboxes: torch.Tensor,
+    xywh: bool = True,
+    interpolation_alpha_min: float = 0.60,
+    interpolation_alpha_max: float = 0.99,
+    eps: float = 1e-7,
+) -> torch.Tensor:
+    """Calculate Dynamic InterpIoU scores between predicted and target bounding boxes."""
+    if xywh:
+        (x1, y1, w1, h1), (x2, y2, w2, h2) = pred_bboxes.chunk(4, -1), target_bboxes.chunk(4, -1)
+        w1_, h1_, w2_, h2_ = w1 / 2, h1 / 2, w2 / 2, h2 / 2
+        b1_x1, b1_x2, b1_y1, b1_y2 = x1 - w1_, x1 + w1_, y1 - h1_, y1 + h1_
+        b2_x1, b2_x2, b2_y1, b2_y2 = x2 - w2_, x2 + w2_, y2 - h2_, y2 + h2_
+    else:
+        b1_x1, b1_y1, b1_x2, b1_y2 = pred_bboxes.chunk(4, -1)
+        b2_x1, b2_y1, b2_x2, b2_y2 = target_bboxes.chunk(4, -1)
+        w1, h1 = b1_x2 - b1_x1, b1_y2 - b1_y1 + eps
+        w2, h2 = b2_x2 - b2_x1, b2_y2 - b2_y1 + eps
+
+    inter = (b1_x2.minimum(b2_x2) - b1_x1.maximum(b2_x1)).clamp_(0) * (
+        b1_y2.minimum(b2_y2) - b1_y1.maximum(b2_y1)
+    ).clamp_(0)
+    union = w1 * h1 + w2 * h2 - inter + eps
+    iou = inter / union
+
+    interpolation_alpha = torch.clamp(
+        1 - iou.detach(), min=interpolation_alpha_min, max=interpolation_alpha_max
+    )
+    bi_x1 = (1 - interpolation_alpha) * b1_x1 + interpolation_alpha * b2_x1
+    bi_y1 = (1 - interpolation_alpha) * b1_y1 + interpolation_alpha * b2_y1
+    bi_x2 = (1 - interpolation_alpha) * b1_x2 + interpolation_alpha * b2_x2
+    bi_y2 = (1 - interpolation_alpha) * b1_y2 + interpolation_alpha * b2_y2
+
+    inter_i = (torch.min(bi_x2, b2_x2) - torch.max(bi_x1, b2_x1)).clamp_(0) * (
+        torch.min(bi_y2, b2_y2) - torch.max(bi_y1, b2_y1)
+    ).clamp_(0)
+    wi, hi = bi_x2 - bi_x1 + eps, bi_y2 - bi_y1 + eps
+    w2, h2 = b2_x2 - b2_x1 + eps, b2_y2 - b2_y1 + eps
+    union_i = wi * hi + w2 * h2 - inter_i + eps
+    iou_i = inter_i / union_i
+    return iou + iou_i - 1
+
+
 class BboxLoss(nn.Module):
     """Criterion class for computing training losses for bounding boxes."""
 
@@ -112,6 +162,10 @@ class BboxLoss(nn.Module):
         """Initialize the BboxLoss module with regularization maximum and DFL settings."""
         super().__init__()
         self.dfl_loss = DFLoss(reg_max) if reg_max > 1 else None
+
+    def _bbox_regression_loss(self, pred_bboxes: torch.Tensor, target_bboxes: torch.Tensor) -> torch.Tensor:
+        """Return the baseline per-box CIoU regression loss."""
+        return 1.0 - bbox_iou(pred_bboxes, target_bboxes, xywh=False, CIoU=True)
 
     def forward(
         self,
@@ -125,10 +179,8 @@ class BboxLoss(nn.Module):
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Compute IoU and DFL losses for bounding boxes."""
         weight = target_scores.sum(-1)[fg_mask].unsqueeze(-1)
-        # Compute IoU (similarity) between predicted and target boxes
-        iou = bbox_iou(pred_bboxes[fg_mask], target_bboxes[fg_mask], xywh=False, CIoU=True)
-        # Convert IoU to loss: weighted sum over positives and divide by target_scores_sum to get weighted mean.
-        loss_iou = ((1.0 - iou) * weight).sum() / target_scores_sum
+        bbox_loss = self._bbox_regression_loss(pred_bboxes[fg_mask], target_bboxes[fg_mask])
+        loss_iou = (bbox_loss * weight).sum() / target_scores_sum
 
         # DFL loss
         if self.dfl_loss:
@@ -139,6 +191,20 @@ class BboxLoss(nn.Module):
             loss_dfl = torch.tensor(0.0).to(pred_dist.device)
 
         return loss_iou, loss_dfl
+
+
+class DynamicInterpIoUBboxLoss(BboxLoss):
+    """Bounding-box criterion using Dynamic InterpIoU while retaining the baseline DFL path."""
+
+    def _bbox_regression_loss(self, pred_bboxes: torch.Tensor, target_bboxes: torch.Tensor) -> torch.Tensor:
+        """Return the per-box Dynamic InterpIoU regression loss with the pre-registered bounds."""
+        return 1.0 - bbox_dynamic_interpiou(
+            pred_bboxes,
+            target_bboxes,
+            xywh=False,
+            interpolation_alpha_min=0.60,
+            interpolation_alpha_max=0.99,
+        )
 
 
 class RotatedBboxLoss(BboxLoss):
@@ -302,6 +368,15 @@ class v8DetectionLoss:
         loss[2] *= self.hyp.dfl  # dfl gain
 
         return loss * batch_size, loss.detach()  # loss(box, cls, dfl)
+
+
+class v8DetectionDynamicInterpIoULoss(v8DetectionLoss):
+    """Detection criterion replacing only positive-box CIoU regression with Dynamic InterpIoU."""
+
+    def __init__(self, model, tal_topk: int = 10):
+        """Initialize detection loss with unchanged TAL, DFL, weighting, and gains."""
+        super().__init__(model, tal_topk)
+        self.bbox_loss = DynamicInterpIoUBboxLoss(self.reg_max).to(self.device)
 
 
 class v8SegmentationLoss(v8DetectionLoss):
