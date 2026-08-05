@@ -8,6 +8,7 @@ import math
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 __all__ = (
     "CBAM",
@@ -647,8 +648,6 @@ class CBAMOriginal(nn.Module):
                 f"c1 ({c1}) must be at least reduction_ratio ({reduction_ratio}) so the channel MLP is non-empty."
             )
 
-        self.avg_pool = nn.AdaptiveAvgPool2d(1)
-        self.max_pool = nn.AdaptiveMaxPool2d(1)
         self.channel_mlp = nn.Sequential(
             nn.Flatten(1),
             nn.Linear(c1, hidden_channels),
@@ -662,7 +661,10 @@ class CBAMOriginal(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Apply shared channel attention followed by spatial attention without changing the tensor shape."""
-        channel_logits = self.channel_mlp(self.avg_pool(x)) + self.channel_mlp(self.max_pool(x))
+        pool_size = (x.size(2), x.size(3))
+        channel_logits = self.channel_mlp(F.avg_pool2d(x, pool_size, stride=pool_size)) + self.channel_mlp(
+            F.max_pool2d(x, pool_size, stride=pool_size)
+        )
         channel_scale = torch.sigmoid(channel_logits).unsqueeze(-1).unsqueeze(-1)
         channel_refined = x * channel_scale
 

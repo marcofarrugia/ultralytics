@@ -2,6 +2,7 @@
 
 import pytest
 import torch
+import torch.nn.functional as F
 
 from ultralytics.nn.modules import CBAMDetect, CBAMOriginal, Detect
 
@@ -17,7 +18,10 @@ def test_cbam_original_matches_source_equations():
     with torch.no_grad():
         actual = module(x)
         repeated = module(x)
-        channel_logits = module.channel_mlp(module.avg_pool(x)) + module.channel_mlp(module.max_pool(x))
+        pool_size = (x.size(2), x.size(3))
+        avg_descriptor = F.avg_pool2d(x, pool_size, stride=pool_size)
+        max_descriptor = F.max_pool2d(x, pool_size, stride=pool_size)
+        channel_logits = module.channel_mlp(avg_descriptor) + module.channel_mlp(max_descriptor)
         channel_refined = x * torch.sigmoid(channel_logits).unsqueeze(-1).unsqueeze(-1)
         spatial_descriptor = torch.cat(
             (
@@ -32,8 +36,11 @@ def test_cbam_original_matches_source_equations():
     torch.testing.assert_close(actual, expected)
     torch.testing.assert_close(actual, repeated, rtol=0, atol=0)
     assert len(mlp_inputs) == 6  # Two calls in each module pass and two calls in the explicit reference equation.
-    torch.testing.assert_close(mlp_inputs[0], module.avg_pool(x))
-    torch.testing.assert_close(mlp_inputs[1], module.max_pool(x))
+    torch.testing.assert_close(mlp_inputs[0], avg_descriptor)
+    torch.testing.assert_close(mlp_inputs[1], max_descriptor)
+    assert not any(
+        isinstance(child, (torch.nn.AdaptiveAvgPool2d, torch.nn.AdaptiveMaxPool2d)) for child in module.modules()
+    )
     assert module.spatial.conv.kernel_size == (7, 7)
     assert module.spatial.conv.bias is None
     assert module.spatial.bn.eps == pytest.approx(1e-5)
@@ -52,6 +59,25 @@ def test_cbam_original_shape_and_gradients(channels, size):
     assert torch.isfinite(output).all()
     assert x.grad is not None and torch.isfinite(x.grad).all()
     assert all(parameter.grad is not None and torch.isfinite(parameter.grad).all() for parameter in module.parameters())
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required for the deterministic-backward check.")
+def test_cbam_original_cuda_backward_is_deterministic():
+    """CBAMOriginal should support strict deterministic CUDA backward with full-window pooling."""
+    deterministic_enabled = torch.are_deterministic_algorithms_enabled()
+    warn_only_enabled = torch.is_deterministic_algorithms_warn_only_enabled()
+    try:
+        torch.use_deterministic_algorithms(True, warn_only=False)
+        module = CBAMOriginal(64).cuda().train()
+        x = torch.randn(2, 64, 20, 20, device="cuda", requires_grad=True)
+        output = module(x)
+        output.square().mean().backward()
+
+        assert torch.isfinite(output).all()
+        assert x.grad is not None and torch.isfinite(x.grad).all()
+        assert all(parameter.grad is not None and torch.isfinite(parameter.grad).all() for parameter in module.parameters())
+    finally:
+        torch.use_deterministic_algorithms(deterministic_enabled, warn_only=warn_only_enabled)
 
 
 @pytest.mark.parametrize(("channels", "ratio"), [(0, 16), (16, 0), (8, 16)])
