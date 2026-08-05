@@ -11,6 +11,7 @@ import torch.nn as nn
 
 __all__ = (
     "CBAM",
+    "CBAMOriginal",
     "ChannelAttention",
     "Concat",
     "Conv",
@@ -611,6 +612,69 @@ class CBAM(nn.Module):
             (torch.Tensor): Attended output tensor.
         """
         return self.spatial_attention(self.channel_attention(x))
+
+
+class _CBAMBatchNorm2d(nn.BatchNorm2d):
+    """BatchNorm marker that preserves the original CBAM normalization settings during model initialization."""
+
+
+class CBAMOriginal(nn.Module):
+    """Paper-faithful Convolutional Block Attention Module.
+
+    This implementation follows equations (2) and (3) from Woo et al., ECCV 2018, and the authors' released
+    implementation at commit 459efad0e05ee7dde50c41ca10a3d0800bc3792a. It applies shared channel attention from
+    global average and max descriptors, followed by 7x7 spatial attention.
+
+    Args:
+        c1 (int): Number of input and output channels.
+        reduction_ratio (int): Channel-MLP reduction ratio.
+
+    References:
+        https://openaccess.thecvf.com/content_ECCV_2018/html/Sanghyun_Woo_Convolutional_Block_Attention_ECCV_2018_paper.html
+        https://github.com/Jongchan/attention-module/blob/459efad0e05ee7dde50c41ca10a3d0800bc3792a/MODELS/cbam.py
+    """
+
+    def __init__(self, c1: int, reduction_ratio: int = 16) -> None:
+        """Initialize the original CBAM channel and spatial attention paths."""
+        super().__init__()
+        if c1 <= 0:
+            raise ValueError(f"c1 must be positive, but received {c1}.")
+        if reduction_ratio <= 0:
+            raise ValueError(f"reduction_ratio must be positive, but received {reduction_ratio}.")
+        hidden_channels = c1 // reduction_ratio
+        if hidden_channels < 1:
+            raise ValueError(
+                f"c1 ({c1}) must be at least reduction_ratio ({reduction_ratio}) so the channel MLP is non-empty."
+            )
+
+        self.avg_pool = nn.AdaptiveAvgPool2d(1)
+        self.max_pool = nn.AdaptiveMaxPool2d(1)
+        self.channel_mlp = nn.Sequential(
+            nn.Flatten(1),
+            nn.Linear(c1, hidden_channels),
+            nn.ReLU(),
+            nn.Linear(hidden_channels, c1),
+        )
+        self.spatial = Conv(2, 1, k=7, s=1, p=3, act=False)
+        # The authors' released spatial gate uses BatchNorm(eps=1e-5, momentum=0.01). A private subclass prevents
+        # Ultralytics' model-wide initializer from replacing these source-defined values with its standard defaults.
+        self.spatial.bn = _CBAMBatchNorm2d(1, eps=1e-5, momentum=0.01, affine=True)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Apply shared channel attention followed by spatial attention without changing the tensor shape."""
+        channel_logits = self.channel_mlp(self.avg_pool(x)) + self.channel_mlp(self.max_pool(x))
+        channel_scale = torch.sigmoid(channel_logits).unsqueeze(-1).unsqueeze(-1)
+        channel_refined = x * channel_scale
+
+        spatial_descriptor = torch.cat(
+            (
+                torch.max(channel_refined, dim=1, keepdim=True)[0],
+                torch.mean(channel_refined, dim=1, keepdim=True),
+            ),
+            dim=1,
+        )
+        spatial_scale = torch.sigmoid(self.spatial(spatial_descriptor))
+        return channel_refined * spatial_scale
 
 
 class Concat(nn.Module):

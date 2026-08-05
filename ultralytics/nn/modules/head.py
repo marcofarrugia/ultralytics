@@ -16,11 +16,22 @@ from ultralytics.utils.tal import dist2bbox, dist2rbox, make_anchors
 from ultralytics.utils.torch_utils import TORCH_1_11, fuse_conv_and_bn, smart_inference_mode
 
 from .block import DFL, SAVPE, BNContrastiveHead, ContrastiveHead, Proto, Residual, SwiGLUFFN
-from .conv import Conv, DWConv
+from .conv import CBAMOriginal, Conv, DWConv
 from .transformer import MLP, DeformableTransformerDecoder, DeformableTransformerDecoderLayer
 from .utils import bias_init_with_prob, linear_init
 
-__all__ = "OBB", "Classify", "Detect", "Pose", "RTDETRDecoder", "Segment", "YOLOEDetect", "YOLOESegment", "v10Detect"
+__all__ = (
+    "OBB",
+    "CBAMDetect",
+    "Classify",
+    "Detect",
+    "Pose",
+    "RTDETRDecoder",
+    "Segment",
+    "YOLOEDetect",
+    "YOLOESegment",
+    "v10Detect",
+)
 
 
 class Detect(nn.Module):
@@ -210,6 +221,24 @@ class Detect(nn.Module):
         scores, index = scores.flatten(1).topk(min(max_det, anchors))
         i = torch.arange(batch_size)[..., None]  # batch indices
         return torch.cat([boxes[i, index // nc], scores[..., None], (index % nc)[..., None].float()], dim=-1)
+
+
+class CBAMDetect(Detect):
+    """YOLO Detect head with paper-faithful CBAM applied independently to every input feature scale."""
+
+    def __init__(self, nc: int = 80, ch: tuple = ()) -> None:
+        """Initialize the unchanged Detect towers and one CBAM module for each input feature map.
+
+        Args:
+            nc (int): Number of classes.
+            ch (tuple): Channel sizes of the P3, P4, and P5 feature maps.
+        """
+        super().__init__(nc, ch)
+        self.cbam = nn.ModuleList(CBAMOriginal(channels) for channels in ch)
+
+    def forward(self, x: list[torch.Tensor]) -> list[torch.Tensor] | tuple:
+        """Refine each detection feature independently before running the inherited Detect forward path."""
+        return super().forward([attention(feature) for attention, feature in zip(self.cbam, x)])
 
 
 class Segment(Detect):

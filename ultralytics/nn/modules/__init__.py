@@ -62,6 +62,7 @@ from .block import (
 )
 from .conv import (
     CBAM,
+    CBAMOriginal,
     ChannelAttention,
     Concat,
     Conv,
@@ -78,6 +79,7 @@ from .conv import (
 )
 from .head import (
     OBB,
+    CBAMDetect,
     Classify,
     Detect,
     LRPCHead,
@@ -110,6 +112,8 @@ __all__ = (
     "C3",
     "C3TR",
     "CBAM",
+    "CBAMDetect",
+    "CBAMOriginal",
     "CIB",
     "DFL",
     "ELAN1",
