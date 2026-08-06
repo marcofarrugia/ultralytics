@@ -16,6 +16,7 @@ __all__ = (
     "C1",
     "C2",
     "C2PSA",
+    "C2PSAFullFeatureAdd",
     "C3",
     "C3TR",
     "CIB",
@@ -1462,6 +1463,35 @@ class C2PSA(nn.Module):
         a, b = self.cv1(x).split((self.c, self.c), dim=1)
         b = self.m(b)
         return self.cv2(torch.cat((a, b), 1))
+
+
+class C2PSAFullFeatureAdd(nn.Module):
+    """Full-width C2PSA variant with projected feature fusion and a scaled outer residual connection."""
+
+    def __init__(self, c1: int, c2: int, n: int = 1):
+        """Initialize the full-width projected residual C2PSA block.
+
+        Args:
+            c1 (int): Input channels.
+            c2 (int): Output channels.
+            n (int): Number of full-width PSABlock modules.
+        """
+        super().__init__()
+        assert c1 == c2
+        self.c = c2
+        self.cv1 = Conv(c1, self.c, 1, 1)
+        self.cv2 = Conv(2 * self.c, c2, 1)
+        self.m = nn.Sequential(
+            *(PSABlock(self.c, attn_ratio=0.5, num_heads=self.c // 64, shortcut=True) for _ in range(n))
+        )
+        self.gamma = nn.Parameter(torch.full((self.c,), 0.01), requires_grad=True)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Apply full-width PSA processing and add the per-channel scaled fused branch to the input."""
+        z = self.cv1(x)
+        attended = self.m(z)
+        fused = self.cv2(torch.cat((z, attended), dim=1))
+        return x + self.gamma.view(1, -1, 1, 1) * fused
 
 
 class C2fPSA(C2f):
