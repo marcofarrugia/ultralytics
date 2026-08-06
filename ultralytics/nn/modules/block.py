@@ -16,6 +16,7 @@ __all__ = (
     "C1",
     "C2",
     "C2PSA",
+    "C2PSA_ParallelCAFM",
     "C3",
     "C3TR",
     "CIB",
@@ -38,6 +39,7 @@ __all__ = (
     "C3Ghost",
     "C3k2",
     "C3x",
+    "CAFMAttention",
     "CBFuse",
     "CBLinear",
     "ContrastiveHead",
@@ -1304,6 +1306,79 @@ class Attention(nn.Module):
         return x
 
 
+class CAFMAttention(nn.Module):
+    """Convolution and attention fusion module from HCANet.
+
+    This clean-room implementation adapts the source module described by Hu et al. in "Hybrid Convolutional and
+    Attention Network for Hyperspectral Image Denoising" (2024) to Ultralytics NCHW feature maps. It retains the
+    source singleton-depth Conv3d formulation and returns only the fused attention delta; the enclosing PSA block
+    supplies the residual connection.
+    """
+
+    def __init__(self, dim: int, num_heads: int, bias: bool = False):
+        """Initialize CAFM attention with local convolution and global transposed-attention branches."""
+        super().__init__()
+        if isinstance(dim, bool) or not isinstance(dim, int) or dim <= 0:
+            raise ValueError(f"dim must be a positive integer, but got {dim!r}.")
+        if isinstance(num_heads, bool) or not isinstance(num_heads, int) or num_heads <= 0:
+            raise ValueError(f"num_heads must be a positive integer, but got {num_heads!r}.")
+        if dim % num_heads:
+            raise ValueError(f"dim ({dim}) must be divisible by num_heads ({num_heads}).")
+
+        self.dim = dim
+        self.num_heads = num_heads
+        self.head_dim = dim // num_heads
+        self.temperature = nn.Parameter(torch.ones(num_heads, 1, 1))
+
+        self.qkv = nn.Conv3d(dim, dim * 3, kernel_size=1, bias=bias)
+        self.qkv_dwconv = nn.Conv3d(
+            dim * 3,
+            dim * 3,
+            kernel_size=3,
+            stride=1,
+            padding=1,
+            groups=dim * 3,
+            bias=bias,
+        )
+        self.project_out = nn.Conv3d(dim, dim, kernel_size=1, bias=bias)
+        self.fc = nn.Conv3d(3 * num_heads, 9, kernel_size=1, bias=True)
+        self.dep_conv = nn.Conv3d(
+            9 * self.head_dim,
+            dim,
+            kernel_size=3,
+            padding=1,
+            groups=self.head_dim,
+            bias=True,
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Fuse local convolutional features with global channel-attention features."""
+        if x.ndim != 4:
+            raise ValueError(f"CAFM expects a 4D NCHW tensor, but received shape {tuple(x.shape)}.")
+        b, c, h, w = x.shape
+        if c != self.dim:
+            raise ValueError(f"CAFM was initialized for {self.dim} channels, but received {c}.")
+
+        qkv = self.qkv_dwconv(self.qkv(x.unsqueeze(2))).squeeze(2)
+
+        # Local branch: retain the source reshape/projection/grouped-convolution path without an extra shuffle op.
+        local = qkv.reshape(b, h * w, 3 * self.num_heads, self.head_dim).permute(0, 2, 1, 3)
+        local = self.fc(local.unsqueeze(2)).squeeze(2)
+        local = local.permute(0, 3, 1, 2).reshape(b, 9 * self.head_dim, h, w)
+        local = self.dep_conv(local.unsqueeze(2)).squeeze(2)
+
+        # Global branch: transposed attention models channel dependencies rather than an HW-by-HW attention map.
+        q, k, v = qkv.chunk(3, dim=1)
+        q = F.normalize(q.reshape(b, self.num_heads, self.head_dim, h * w), dim=-1)
+        k = F.normalize(k.reshape(b, self.num_heads, self.head_dim, h * w), dim=-1)
+        v = v.reshape(b, self.num_heads, self.head_dim, h * w)
+        attn = ((q @ k.transpose(-2, -1)) * self.temperature).softmax(dim=-1)
+        global_features = (attn @ v).reshape(b, c, h, w)
+        global_features = self.project_out(global_features.unsqueeze(2)).squeeze(2)
+
+        return global_features + local
+
+
 class PSABlock(nn.Module):
     """PSABlock class implementing a Position-Sensitive Attention block for neural networks.
 
@@ -1350,6 +1425,29 @@ class PSABlock(nn.Module):
             (torch.Tensor): Output tensor after attention and feed-forward processing.
         """
         x = x + self.attn(x) if self.add else self.attn(x)
+        x = x + self.ffn(x) if self.add else self.ffn(x)
+        return x
+
+
+class PSABlockParallelCAFM(nn.Module):
+    """PSA block that evaluates baseline Attention and CAFM in parallel on the same representation."""
+
+    def __init__(self, c: int, attn_ratio: float = 0.5, num_heads: int = 4, shortcut: bool = True) -> None:
+        """Initialize parallel attention paths with an exactly zero-initialized scalar CAFM gate."""
+        super().__init__()
+        self.attn = Attention(c, attn_ratio=attn_ratio, num_heads=num_heads)
+        self.cafm = CAFMAttention(c, num_heads=num_heads, bias=False)
+        self.gamma = nn.Parameter(torch.tensor(0.0))
+        self.ffn = nn.Sequential(Conv(c, c * 2, 1), Conv(c * 2, c, 1, act=False))
+        self.add = shortcut
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Fuse same-input spatial and gated channel-local deltas before the unchanged PSA FFN."""
+        residual = x
+        spatial = self.attn(residual)
+        channel_local = self.cafm(residual)
+        fused = spatial + self.gamma * channel_local
+        x = residual + fused if self.add else fused
         x = x + self.ffn(x) if self.add else self.ffn(x)
         return x
 
@@ -1459,6 +1557,32 @@ class C2PSA(nn.Module):
         Returns:
             (torch.Tensor): Output tensor after processing.
         """
+        a, b = self.cv1(x).split((self.c, self.c), dim=1)
+        b = self.m(b)
+        return self.cv2(torch.cat((a, b), 1))
+
+
+class C2PSA_ParallelCAFM(nn.Module):
+    """C2PSA variant that retains baseline Attention and adds zero-gated CAFM in parallel."""
+
+    def __init__(self, c1: int, c2: int, n: int = 1, e: float = 0.5):
+        """Initialize the parallel CAFM path while preserving the outer C2PSA feature-routing contract."""
+        super().__init__()
+        assert c1 == c2
+        self.c = int(c1 * e)
+        self.cv1 = Conv(c1, 2 * self.c, 1, 1)
+        self.cv2 = Conv(2 * self.c, c1, 1)
+        self.m = nn.Sequential(
+            *(
+                PSABlockParallelCAFM(
+                    self.c, attn_ratio=0.5, num_heads=self.c // 64, shortcut=True
+                )
+                for _ in range(n)
+            )
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Apply parallel Attention and CAFM to the processed half of the split C2PSA feature tensor."""
         a, b = self.cv1(x).split((self.c, self.c), dim=1)
         b = self.m(b)
         return self.cv2(torch.cat((a, b), 1))
