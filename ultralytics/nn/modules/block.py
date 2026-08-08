@@ -1464,6 +1464,40 @@ class C2PSA(nn.Module):
         return self.cv2(torch.cat((a, b), 1))
 
 
+class C2PSAFullFeatureFusion(nn.Module):
+    """Full-width C2PSA variant with configurable projected-feature fusion."""
+
+    def __init__(self, c1: int, c2: int, n: int = 1, fusion: str = "concat"):
+        """Initialize full-width PSA processing with concatenated or direct output fusion.
+
+        Args:
+            c1 (int): Input channels.
+            c2 (int): Output channels.
+            n (int): Number of full-width PSABlock modules.
+            fusion (str): Output fusion mode, either ``"concat"`` or ``"no_concat"``.
+        """
+        super().__init__()
+        assert c1 == c2
+        if fusion not in {"concat", "no_concat"}:
+            raise ValueError(f"Unsupported fusion mode {fusion!r}; expected 'concat' or 'no_concat'.")
+
+        self.c = c2
+        self.fusion = fusion
+        self.cv1 = Conv(c1, self.c, 1, 1)
+        self.m = nn.Sequential(
+            *(PSABlock(self.c, attn_ratio=0.5, num_heads=self.c // 64, shortcut=True) for _ in range(n))
+        )
+        self.cv2 = Conv(2 * self.c if fusion == "concat" else self.c, c2, 1)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Apply full-width PSA processing and the configured projected-feature fusion."""
+        z = self.cv1(x)
+        attended = self.m(z)
+        if self.fusion == "concat":
+            attended = torch.cat((z, attended), dim=1)
+        return self.cv2(attended)
+
+
 class C2fPSA(C2f):
     """C2fPSA module with enhanced feature extraction using PSA blocks.
 
