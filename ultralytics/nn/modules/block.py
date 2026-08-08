@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import math
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -16,6 +18,7 @@ __all__ = (
     "C1",
     "C2",
     "C2PSA",
+    "C2PSAIRPEK",
     "C3",
     "C3TR",
     "CIB",
@@ -1304,6 +1307,122 @@ class Attention(nn.Module):
         return x
 
 
+class _ContextualProductIRPE(nn.Module):
+    """Contextual Product image relative position encoding for the key side of attention.
+
+    This is the ``rpe-2.0-product-ctx-1-k`` mapping from Wu et al., ICCV 2021, restricted to spatial
+    tokens and implemented with native PyTorch operations.
+    """
+
+    def __init__(self, head_dim: int):
+        """Initialize one 9x9 relative-position table shared across attention heads."""
+        super().__init__()
+        self.head_dim = head_dim
+        self.alpha = 2.0
+        self.beta = 4.0
+        self.gamma = 16.0
+        self.beta_int = int(self.beta)
+        self.bucket_size = 2 * self.beta_int + 1
+        self.num_buckets = self.bucket_size**2
+        self.lookup_table_weight = nn.Parameter(torch.zeros(1, head_dim, self.num_buckets))
+        self.register_buffer("_relative_position_index", torch.empty(0, dtype=torch.long), persistent=False)
+        self._cached_hw = (-1, -1)
+
+    @torch.no_grad()
+    def _piecewise_index(self, relative_position: torch.Tensor) -> torch.Tensor:
+        """Map signed offsets to the paper's piecewise long-distance buckets in [-4, 4]."""
+        position = relative_position.to(torch.float32)
+        magnitude = position.abs()
+        compressed = self.alpha + (
+            torch.log(magnitude.clamp_min(self.alpha) / self.alpha)
+            / math.log(self.gamma / self.alpha)
+            * (self.beta - self.alpha)
+        )
+        compressed = compressed.round().clamp(max=self.beta)
+        mapped = torch.sign(position) * compressed
+        mapped = torch.where(magnitude <= self.alpha, position, mapped)
+        return mapped.to(torch.long)
+
+    @torch.no_grad()
+    def _build_relative_position_index(self, height: int, width: int, device: torch.device) -> torch.Tensor:
+        """Build row-major Product bucket IDs for an ``height x width`` feature map."""
+        rows = torch.arange(height, device=device)
+        columns = torch.arange(width, device=device)
+        coordinates = torch.stack(torch.meshgrid(rows, columns, indexing="ij"), dim=-1).reshape(-1, 2)
+        relative_position = coordinates[:, None, :] - coordinates[None, :, :]
+        row_bucket = self._piecewise_index(relative_position[..., 0]) + self.beta_int
+        column_bucket = self._piecewise_index(relative_position[..., 1]) + self.beta_int
+        return (row_bucket * self.bucket_size + column_bucket).contiguous()
+
+    def _get_relative_position_index(self, height: int, width: int, device: torch.device) -> torch.Tensor:
+        """Return a non-persistent shape/device-specific bucket-index cache."""
+        tokens = height * width
+        if (
+            self._cached_hw != (height, width)
+            or self._relative_position_index.device != device
+            or self._relative_position_index.numel() != tokens * tokens
+        ):
+            self._relative_position_index = self._build_relative_position_index(height, width, device)
+            self._cached_hw = (height, width)
+        return self._relative_position_index
+
+    def forward(self, query: torch.Tensor, height: int, width: int) -> torch.Tensor:
+        """Return query-conditioned relative logits with shape ``(B, heads, N, N)``."""
+        batch, heads, tokens, head_dim = query.shape
+        if tokens != height * width:
+            raise ValueError(f"Expected {height * width} spatial tokens for shape {(height, width)}, got {tokens}.")
+        if head_dim != self.head_dim:
+            raise ValueError(f"Expected query head dimension {self.head_dim}, got {head_dim}.")
+
+        lookup = query @ self.lookup_table_weight[0]
+        relative_index = self._get_relative_position_index(height, width, query.device)
+        relative_index = relative_index.view(1, 1, tokens, tokens).expand(batch, heads, -1, -1)
+        return torch.gather(lookup, dim=-1, index=relative_index)
+
+
+class _AttentionIRPEK(Attention):
+    """YOLO11 attention with contextual Product iRPE on keys and unchanged value-side LePE."""
+
+    def __init__(self, dim: int, num_heads: int = 8, attn_ratio: float = 0.5):
+        """Initialize baseline attention projections and the zero-initialized iRPE-K table."""
+        super().__init__(dim, num_heads=num_heads, attn_ratio=attn_ratio)
+        self.rpe_k = _ContextualProductIRPE(self.key_dim)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Apply iRPE-K to scaled attention logits before softmax."""
+        B, C, H, W = x.shape
+        N = H * W
+        qkv = self.qkv(x)
+        q, k, v = qkv.view(B, self.num_heads, self.key_dim * 2 + self.head_dim, N).split(
+            [self.key_dim, self.key_dim, self.head_dim], dim=2
+        )
+
+        query = q.transpose(-2, -1)
+        attn = (query @ k) * self.scale
+        attn = attn + self.rpe_k(query, H, W) * self.scale
+        attn = attn.softmax(dim=-1)
+        x = (v @ attn.transpose(-2, -1)).view(B, C, H, W) + self.pe(v.reshape(B, C, H, W))
+        x = self.proj(x)
+        return x
+
+
+class _PSABlockIRPEK(nn.Module):
+    """PSABlock variant that changes only its attention module to iRPE-K attention."""
+
+    def __init__(self, c: int, attn_ratio: float = 0.5, num_heads: int = 4, shortcut: bool = True) -> None:
+        """Initialize iRPE-K attention with the baseline FFN and shortcut configuration."""
+        super().__init__()
+        self.attn = _AttentionIRPEK(c, attn_ratio=attn_ratio, num_heads=num_heads)
+        self.ffn = nn.Sequential(Conv(c, c * 2, 1), Conv(c * 2, c, 1, act=False))
+        self.add = shortcut
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Execute the unchanged PSABlock residual equations."""
+        x = x + self.attn(x) if self.add else self.attn(x)
+        x = x + self.ffn(x) if self.add else self.ffn(x)
+        return x
+
+
 class PSABlock(nn.Module):
     """PSABlock class implementing a Position-Sensitive Attention block for neural networks.
 
@@ -1459,6 +1578,27 @@ class C2PSA(nn.Module):
         Returns:
             (torch.Tensor): Output tensor after processing.
         """
+        a, b = self.cv1(x).split((self.c, self.c), dim=1)
+        b = self.m(b)
+        return self.cv2(torch.cat((a, b), 1))
+
+
+class C2PSAIRPEK(nn.Module):
+    """C2PSA variant with contextual Product iRPE-K added to each attention block."""
+
+    def __init__(self, c1: int, c2: int, n: int = 1, e: float = 0.5):
+        """Initialize the baseline split C2PSA topology with iRPE-K PSABlocks."""
+        super().__init__()
+        assert c1 == c2
+        self.c = int(c1 * e)
+        self.cv1 = Conv(c1, 2 * self.c, 1, 1)
+        self.cv2 = Conv(2 * self.c, c1, 1)
+        self.m = nn.Sequential(
+            *(_PSABlockIRPEK(self.c, attn_ratio=0.5, num_heads=self.c // 64) for _ in range(n))
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Process the attended half through iRPE-K PSABlocks and preserve the outer C2PSA contract."""
         a, b = self.cv1(x).split((self.c, self.c), dim=1)
         b = self.m(b)
         return self.cv2(torch.cat((a, b), 1))
