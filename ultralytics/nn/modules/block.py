@@ -16,6 +16,7 @@ __all__ = (
     "C1",
     "C2",
     "C2PSA",
+    "C2PSAFullFeatureFusion",
     "C3",
     "C3TR",
     "CIB",
@@ -37,6 +38,7 @@ __all__ = (
     "C2fPSA",
     "C3Ghost",
     "C3k2",
+    "C3k2FusionBottleneckPSA",
     "C3x",
     "CBFuse",
     "CBLinear",
@@ -1354,6 +1356,68 @@ class PSABlock(nn.Module):
         return x
 
 
+class C3k2FusionBottleneckPSA(C3k2):
+    """C3k2 whose fused output is bottlenecked, globally attended, and projected to the requested width."""
+
+    def __init__(
+        self,
+        c1: int,
+        c2: int,
+        n: int = 1,
+        c3k: bool = False,
+        bottleneck_ratio: float = 1.0,
+        e: float = 0.5,
+        g: int = 1,
+        shortcut: bool = True,
+        attn_ratio: float = 0.5,
+    ) -> None:
+        """Initialize the baseline C3k2 path before adding post-fusion PSA and its output projection."""
+        super().__init__(c1, c2, n, c3k, e, g, shortcut)
+        if not 0 < bottleneck_ratio <= 1:
+            raise ValueError(f"bottleneck_ratio must be in (0, 1], but received {bottleneck_ratio}")
+        if attn_ratio <= 0:
+            raise ValueError(f"attn_ratio must be positive, but received {attn_ratio}")
+
+        self.bottleneck_ratio = bottleneck_ratio
+        self.attention_channels = int(c2 * bottleneck_ratio)
+        if self.attention_channels <= 0:
+            raise ValueError(
+                f"bottleneck_ratio={bottleneck_ratio} produces zero attention channels for c2={c2}"
+            )
+        if bottleneck_ratio < 1:
+            self.cv2 = Conv(self.cv2.conv.in_channels, self.attention_channels, 1)
+
+        self.num_heads = max(1, self.attention_channels // 64)
+        if self.attention_channels % self.num_heads:
+            raise ValueError(
+                f"attention_channels={self.attention_channels} must be divisible by num_heads={self.num_heads}"
+            )
+        head_dim = self.attention_channels // self.num_heads
+        if int(head_dim * attn_ratio) <= 0:
+            raise ValueError(
+                f"attention_channels={self.attention_channels}, num_heads={self.num_heads}, and "
+                f"attn_ratio={attn_ratio} produce a zero key dimension"
+            )
+
+        self.psa = PSABlock(
+            self.attention_channels, attn_ratio=attn_ratio, num_heads=self.num_heads, shortcut=True
+        )
+        self.cv3 = Conv(self.attention_channels, c2, 1)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Fuse the complete C3k2 representation before applying global PSA and the output projection."""
+        y = list(self.cv1(x).chunk(2, 1))
+        y.extend(m(y[-1]) for m in self.m)
+        return self.cv3(self.psa(self.cv2(torch.cat(y, 1))))
+
+    def forward_split(self, x: torch.Tensor) -> torch.Tensor:
+        """Run the same post-fusion attention path using split() instead of chunk()."""
+        split = self.cv1(x).split((self.c, self.c), 1)
+        y = [split[0], split[1]]
+        y.extend(m(y[-1]) for m in self.m)
+        return self.cv3(self.psa(self.cv2(torch.cat(y, 1))))
+
+
 class PSA(nn.Module):
     """PSA class for implementing Position-Sensitive Attention in neural networks.
 
@@ -1462,6 +1526,40 @@ class C2PSA(nn.Module):
         a, b = self.cv1(x).split((self.c, self.c), dim=1)
         b = self.m(b)
         return self.cv2(torch.cat((a, b), 1))
+
+
+class C2PSAFullFeatureFusion(nn.Module):
+    """Full-width C2PSA variant with configurable projected-feature fusion."""
+
+    def __init__(self, c1: int, c2: int, n: int = 1, fusion: str = "concat"):
+        """Initialize full-width PSA processing with concatenated or direct output fusion.
+
+        Args:
+            c1 (int): Input channels.
+            c2 (int): Output channels.
+            n (int): Number of full-width PSABlock modules.
+            fusion (str): Output fusion mode, either ``"concat"`` or ``"no_concat"``.
+        """
+        super().__init__()
+        assert c1 == c2
+        if fusion not in {"concat", "no_concat"}:
+            raise ValueError(f"Unsupported fusion mode {fusion!r}; expected 'concat' or 'no_concat'.")
+
+        self.c = c2
+        self.fusion = fusion
+        self.cv1 = Conv(c1, self.c, 1, 1)
+        self.m = nn.Sequential(
+            *(PSABlock(self.c, attn_ratio=0.5, num_heads=self.c // 64, shortcut=True) for _ in range(n))
+        )
+        self.cv2 = Conv(2 * self.c if fusion == "concat" else self.c, c2, 1)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Apply full-width PSA processing and the configured projected-feature fusion."""
+        z = self.cv1(x)
+        attended = self.m(z)
+        if self.fusion == "concat":
+            attended = torch.cat((z, attended), dim=1)
+        return self.cv2(attended)
 
 
 class C2fPSA(C2f):

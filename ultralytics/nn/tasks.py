@@ -16,6 +16,7 @@ from ultralytics.nn.modules import (
     C1,
     C2,
     C2PSA,
+    C2PSAFullFeatureFusion,
     C3,
     C3TR,
     ELAN1,
@@ -35,6 +36,7 @@ from ultralytics.nn.modules import (
     C2fPSA,
     C3Ghost,
     C3k2,
+    C3k2FusionBottleneckPSA,
     C3x,
     CBFuse,
     CBLinear,
@@ -1529,6 +1531,7 @@ def parse_model(d, ch, verbose=True):
             SPPF,
             C2fPSA,
             C2PSA,
+            C2PSAFullFeatureFusion,
             DWConv,
             Focus,
             BottleneckCSP,
@@ -1536,6 +1539,7 @@ def parse_model(d, ch, verbose=True):
             C2,
             C2f,
             C3k2,
+            C3k2FusionBottleneckPSA,
             RepNCSPELAN4,
             ELAN1,
             ADown,
@@ -1571,6 +1575,8 @@ def parse_model(d, ch, verbose=True):
             C2fPSA,
             C2fCIB,
             C2PSA,
+            C2PSAFullFeatureFusion,
+            C3k2FusionBottleneckPSA,
             A2C2f,
         }
     )
@@ -1599,7 +1605,7 @@ def parse_model(d, ch, verbose=True):
             if m in repeat_modules:
                 args.insert(2, n)  # number of repeats
                 n = 1
-            if m is C3k2:  # for M/L/X sizes
+            if m in frozenset({C3k2, C3k2FusionBottleneckPSA}):  # for M/L/X sizes
                 legacy = False
                 if scale in "mlx":
                     args[3] = True
