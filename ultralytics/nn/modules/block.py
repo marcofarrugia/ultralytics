@@ -18,6 +18,7 @@ __all__ = (
     "C2PSA",
     "C3",
     "C3TR",
+    "C3k2FusionBottleneckCrossPSA",
     "CIB",
     "DFL",
     "ELAN1",
@@ -41,6 +42,7 @@ __all__ = (
     "CBFuse",
     "CBLinear",
     "ContrastiveHead",
+    "CrossPSA",
     "GhostBottleneck",
     "HGBlock",
     "HGStem",
@@ -1352,6 +1354,226 @@ class PSABlock(nn.Module):
         x = x + self.attn(x) if self.add else self.attn(x)
         x = x + self.ffn(x) if self.add else self.ffn(x)
         return x
+
+
+class _CrossStripeAttention(nn.Module):
+    """Cross-shaped stripe self-attention with a value-side convolutional positional branch."""
+
+    def __init__(self, dim: int, num_heads: int, stripe_width: int = 5, attn_ratio: float = 0.5) -> None:
+        """Initialize horizontal and vertical stripe attention."""
+        super().__init__()
+        if dim <= 0:
+            raise ValueError(f"dim must be positive, but received {dim}")
+        if num_heads < 2 or num_heads % 2:
+            raise ValueError(f"num_heads must be a positive even value of at least 2, but received {num_heads}")
+        if dim % num_heads:
+            raise ValueError(f"dim={dim} must be divisible by num_heads={num_heads}")
+        if stripe_width <= 0:
+            raise ValueError(f"stripe_width must be positive, but received {stripe_width}")
+        if attn_ratio <= 0:
+            raise ValueError(f"attn_ratio must be positive, but received {attn_ratio}")
+
+        self.num_heads = num_heads
+        self.stripe_width = stripe_width
+        self.head_dim = dim // num_heads
+        self.key_dim = int(self.head_dim * attn_ratio)
+        if self.key_dim <= 0:
+            raise ValueError(
+                f"attn_ratio={attn_ratio} produces a zero query/key dimension for head_dim={self.head_dim}"
+            )
+        self.scale = self.key_dim**-0.5
+        qkv_channels = dim + 2 * self.key_dim * num_heads
+        self.qkv = Conv(dim, qkv_channels, 1, act=False)
+        self.proj = Conv(dim, dim, 1, act=False)
+        self.pe = Conv(dim, dim, 3, 1, g=dim, act=False)
+
+    def _stripe_attention(
+        self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, horizontal: bool
+    ) -> torch.Tensor:
+        """Apply attention within one orientation of non-overlapping stripes."""
+        batch, heads, key_dim, height, width = q.shape
+        value_dim = v.shape[2]
+        stripe = self.stripe_width
+        key_mask = None
+
+        if horizontal:
+            pad_height = (-height) % stripe
+            if pad_height:
+                q = F.pad(q, (0, 0, 0, pad_height))
+                k = F.pad(k, (0, 0, 0, pad_height))
+                v = F.pad(v, (0, 0, 0, pad_height))
+            padded_height = height + pad_height
+            stripe_count = padded_height // stripe
+            stripe_tokens = stripe * width
+            if pad_height:
+                valid = torch.arange(padded_height, device=q.device).lt(height).unsqueeze(1).expand(-1, width)
+                valid = valid.reshape(stripe_count, stripe_tokens)
+                key_mask = valid.unsqueeze(0).expand(batch, -1, -1).reshape(
+                    batch * stripe_count, 1, 1, stripe_tokens
+                )
+
+            q = (
+                q.reshape(batch, heads, key_dim, stripe_count, stripe, width)
+                .permute(0, 3, 1, 4, 5, 2)
+                .reshape(batch * stripe_count, heads, stripe_tokens, key_dim)
+            )
+            k = (
+                k.reshape(batch, heads, key_dim, stripe_count, stripe, width)
+                .permute(0, 3, 1, 4, 5, 2)
+                .reshape(batch * stripe_count, heads, stripe_tokens, key_dim)
+            )
+            v = (
+                v.reshape(batch, heads, value_dim, stripe_count, stripe, width)
+                .permute(0, 3, 1, 4, 5, 2)
+                .reshape(batch * stripe_count, heads, stripe_tokens, value_dim)
+            )
+        else:
+            pad_width = (-width) % stripe
+            if pad_width:
+                q = F.pad(q, (0, pad_width, 0, 0))
+                k = F.pad(k, (0, pad_width, 0, 0))
+                v = F.pad(v, (0, pad_width, 0, 0))
+            padded_width = width + pad_width
+            stripe_count = padded_width // stripe
+            stripe_tokens = height * stripe
+            if pad_width:
+                valid = torch.arange(padded_width, device=q.device).lt(width).unsqueeze(0).expand(height, -1)
+                valid = valid.reshape(height, stripe_count, stripe).permute(1, 0, 2).reshape(
+                    stripe_count, stripe_tokens
+                )
+                key_mask = valid.unsqueeze(0).expand(batch, -1, -1).reshape(
+                    batch * stripe_count, 1, 1, stripe_tokens
+                )
+
+            q = (
+                q.reshape(batch, heads, key_dim, height, stripe_count, stripe)
+                .permute(0, 4, 1, 3, 5, 2)
+                .reshape(batch * stripe_count, heads, stripe_tokens, key_dim)
+            )
+            k = (
+                k.reshape(batch, heads, key_dim, height, stripe_count, stripe)
+                .permute(0, 4, 1, 3, 5, 2)
+                .reshape(batch * stripe_count, heads, stripe_tokens, key_dim)
+            )
+            v = (
+                v.reshape(batch, heads, value_dim, height, stripe_count, stripe)
+                .permute(0, 4, 1, 3, 5, 2)
+                .reshape(batch * stripe_count, heads, stripe_tokens, value_dim)
+            )
+
+        scores = (q @ k.transpose(-2, -1)) * self.scale
+        if key_mask is not None:
+            scores = scores.masked_fill(~key_mask, torch.finfo(scores.dtype).min)
+        attended = scores.softmax(dim=-1) @ v
+
+        if horizontal:
+            return (
+                attended.reshape(batch, stripe_count, heads, stripe, width, value_dim)
+                .permute(0, 2, 5, 1, 3, 4)
+                .reshape(batch, heads, value_dim, padded_height, width)[..., :height, :]
+            )
+        return (
+            attended.reshape(batch, stripe_count, heads, height, stripe, value_dim)
+            .permute(0, 2, 5, 3, 1, 4)
+            .reshape(batch, heads, value_dim, height, padded_width)[..., :width]
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Apply parallel horizontal and vertical stripe attention."""
+        batch, channels, height, width = x.shape
+        qkv = self.qkv(x)
+        q, k, v = qkv.view(
+            batch, self.num_heads, 2 * self.key_dim + self.head_dim, height, width
+        ).split((self.key_dim, self.key_dim, self.head_dim), dim=2)
+        half_heads = self.num_heads // 2
+        horizontal = self._stripe_attention(q[:, :half_heads], k[:, :half_heads], v[:, :half_heads], True)
+        vertical = self._stripe_attention(q[:, half_heads:], k[:, half_heads:], v[:, half_heads:], False)
+        attended = torch.cat((horizontal, vertical), dim=1).reshape(batch, channels, height, width)
+        attended = attended + self.pe(v.reshape(batch, channels, height, width))
+        return self.proj(attended)
+
+
+class CrossPSA(nn.Module):
+    """PSA block using parallel horizontal and vertical stripe self-attention."""
+
+    def __init__(
+        self,
+        c: int,
+        attn_ratio: float = 0.5,
+        num_heads: int | None = None,
+        stripe_width: int = 5,
+        shortcut: bool = True,
+    ) -> None:
+        """Initialize CrossPSA with baseline PSA feed-forward and residual structure."""
+        super().__init__()
+        if c <= 0:
+            raise ValueError(f"c must be positive, but received {c}")
+        if num_heads is None:
+            minimum_heads = max(2, (c + 63) // 64)
+            num_heads = next(
+                (candidate for candidate in range(minimum_heads, c + 1) if candidate % 2 == 0 and c % candidate == 0),
+                None,
+            )
+            if num_heads is None:
+                raise ValueError(f"c={c} has no even head divisor that keeps the head width at most 64")
+
+        self.attn = _CrossStripeAttention(c, num_heads, stripe_width=stripe_width, attn_ratio=attn_ratio)
+        self.ffn = nn.Sequential(Conv(c, c * 2, 1), Conv(c * 2, c, 1, act=False))
+        self.add = shortcut
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Apply cross-shaped attention and feed-forward residual branches."""
+        x = x + self.attn(x) if self.add else self.attn(x)
+        x = x + self.ffn(x) if self.add else self.ffn(x)
+        return x
+
+
+class C3k2FusionBottleneckCrossPSA(C3k2):
+    """C3k2 whose fused output is bottlenecked, refined by CrossPSA, and projected to the requested width."""
+
+    def __init__(
+        self,
+        c1: int,
+        c2: int,
+        n: int = 1,
+        c3k: bool = False,
+        bottleneck_ratio: float = 1.0,
+        e: float = 0.5,
+        g: int = 1,
+        shortcut: bool = True,
+        stripe_width: int = 5,
+        attn_ratio: float = 0.5,
+    ) -> None:
+        """Initialize the baseline C3k2 path before adding post-fusion attention and its output projection."""
+        super().__init__(c1, c2, n, c3k, e, g, shortcut)
+        if not 0 < bottleneck_ratio <= 1:
+            raise ValueError(f"bottleneck_ratio must be in (0, 1], but received {bottleneck_ratio}")
+
+        self.bottleneck_ratio = bottleneck_ratio
+        self.attention_channels = int(c2 * bottleneck_ratio)
+        if self.attention_channels <= 0:
+            raise ValueError(
+                f"bottleneck_ratio={bottleneck_ratio} produces zero attention channels for c2={c2}"
+            )
+        if bottleneck_ratio < 1:
+            self.cv2 = Conv(self.cv2.conv.in_channels, self.attention_channels, 1)
+        self.cross_psa = CrossPSA(
+            self.attention_channels, attn_ratio=attn_ratio, stripe_width=stripe_width
+        )
+        self.cv3 = Conv(self.attention_channels, c2, 1)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Fuse the complete C3k2 representation before applying CrossPSA and the output projection."""
+        y = list(self.cv1(x).chunk(2, 1))
+        y.extend(m(y[-1]) for m in self.m)
+        return self.cv3(self.cross_psa(self.cv2(torch.cat(y, 1))))
+
+    def forward_split(self, x: torch.Tensor) -> torch.Tensor:
+        """Run the same post-fusion attention path using split() instead of chunk()."""
+        split = self.cv1(x).split((self.c, self.c), 1)
+        y = [split[0], split[1]]
+        y.extend(m(y[-1]) for m in self.m)
+        return self.cv3(self.cross_psa(self.cv2(torch.cat(y, 1))))
 
 
 class PSA(nn.Module):
