@@ -1,5 +1,7 @@
 # Ultralytics 🚀 AGPL-3.0 License - https://ultralytics.com/license
 
+from typing import Sequence
+
 import torch
 import torch.nn as nn
 
@@ -313,6 +315,58 @@ class TaskAlignedAssigner(nn.Module):
         # Find each grid serve which gt(index)
         target_gt_idx = mask_pos.argmax(-2)  # (b, h*w)
         return target_gt_idx, fg_mask, mask_pos
+
+
+class STALTaskAlignedAssigner(TaskAlignedAssigner):
+    """Task-aligned assigner with candidate-only Small-Target-Aware Label Assignment (STAL).
+
+    STAL constructs a center-preserving surrogate box only for candidate containment. The original ground-truth box
+    remains unchanged for alignment scoring, top-k selection, target generation, and regression.
+
+    References:
+        https://arxiv.org/html/2606.03748v1
+        https://github.com/ultralytics/ultralytics/blob/0dd119770115b4e10dc98118e8dc2febd9aa2011/ultralytics/utils/tal.py
+    """
+
+    def __init__(
+        self,
+        topk: int = 13,
+        num_classes: int = 80,
+        alpha: float = 1.0,
+        beta: float = 6.0,
+        strides: Sequence[float] = (8, 16, 32),
+        eps: float = 1e-9,
+    ):
+        """Initialize STAL using the smallest stride as its threshold and the next stride as its reference size."""
+        super().__init__(topk=topk, num_classes=num_classes, alpha=alpha, beta=beta, eps=eps)
+        if len(strides) < 2:
+            raise ValueError(f"STAL requires at least two detection strides, but received {strides}.")
+        self.strides = tuple(float(stride) for stride in strides)
+        self.min_stride = self.strides[0]
+        self.reference_size = self.strides[1]
+
+    def get_pos_mask(self, pd_scores, pd_bboxes, gt_labels, gt_bboxes, anc_points, mask_gt):
+        """Get the positive mask using STAL only for the candidate-containment stage."""
+        mask_in_gts = self.select_candidates_in_gts(anc_points, gt_bboxes, mask_gt)
+        # Preserve the original ground-truth boxes for alignment scoring and overlap calculation.
+        align_metric, overlaps = self.get_box_metrics(pd_scores, pd_bboxes, gt_labels, gt_bboxes, mask_in_gts * mask_gt)
+        mask_topk = self.select_topk_candidates(align_metric, topk_mask=mask_gt.expand(-1, -1, self.topk).bool())
+        mask_pos = mask_topk * mask_in_gts * mask_gt
+        return mask_pos, align_metric, overlaps
+
+    def select_candidates_in_gts(self, xy_centers, gt_bboxes, mask_gt, eps=1e-9):
+        """Select candidates using a center-preserving 16-pixel surrogate for dimensions strictly below 8 pixels."""
+        original_lt, original_rb = gt_bboxes.chunk(2, dim=-1)
+        centers = (original_lt + original_rb) / 2
+        wh = original_rb - original_lt
+        enlarge = (wh < self.min_stride) & mask_gt.bool()
+
+        # Reconstruct only enlarged axes so untouched xyxy edges remain bit-identical to vanilla TAL. A full
+        # xyxy -> xywh -> xyxy round trip can shift an ordinary float32 edge across a strict anchor boundary.
+        half_reference = torch.full_like(wh, self.reference_size / 2)
+        lt = torch.where(enlarge, centers - half_reference, original_lt).unsqueeze(2)
+        rb = torch.where(enlarge, centers + half_reference, original_rb).unsqueeze(2)
+        return ((xy_centers - lt > eps) & (rb - xy_centers > eps)).all(3)
 
 
 class RotatedTaskAlignedAssigner(TaskAlignedAssigner):

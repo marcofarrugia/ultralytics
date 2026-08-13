@@ -75,6 +75,7 @@ from ultralytics.utils.loss import (
     E2EDetectLoss,
     v8ClassificationLoss,
     v8DetectionLoss,
+    v8DetectionSTALLoss,
     v8OBBLoss,
     v8PoseLoss,
     v8SegmentationLoss,
@@ -481,7 +482,9 @@ class DetectionModel(BaseModel):
 
     def init_criterion(self):
         """Initialize the loss criterion for the DetectionModel."""
-        return E2EDetectLoss(self) if getattr(self, "end2end", False) else v8DetectionLoss(self)
+        if getattr(self, "end2end", False):
+            return E2EDetectLoss(self)
+        return v8DetectionSTALLoss(self) if self.model[-1].__class__ is Detect else v8DetectionLoss(self)
 
 
 class OBBModel(DetectionModel):

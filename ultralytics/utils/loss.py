@@ -10,7 +10,14 @@ import torch.nn.functional as F
 
 from ultralytics.utils.metrics import OKS_SIGMA
 from ultralytics.utils.ops import crop_mask, xywh2xyxy, xyxy2xywh
-from ultralytics.utils.tal import RotatedTaskAlignedAssigner, TaskAlignedAssigner, dist2bbox, dist2rbox, make_anchors
+from ultralytics.utils.tal import (
+    RotatedTaskAlignedAssigner,
+    STALTaskAlignedAssigner,
+    TaskAlignedAssigner,
+    dist2bbox,
+    dist2rbox,
+    make_anchors,
+)
 from ultralytics.utils.torch_utils import autocast
 
 from .metrics import bbox_iou, probiou
@@ -302,6 +309,27 @@ class v8DetectionLoss:
         loss[2] *= self.hyp.dfl  # dfl gain
 
         return loss * batch_size, loss.detach()  # loss(box, cls, dfl)
+
+
+class v8DetectionSTALLoss(v8DetectionLoss):
+    """YOLO detection loss that changes only Task-Aligned Assignment candidate selection to STAL-16."""
+
+    def __init__(self, model, tal_topk: int = 10):
+        """Initialize the baseline detection loss and replace only its task-aligned assigner."""
+        super().__init__(model, tal_topk=tal_topk)
+        strides = tuple(float(stride) for stride in self.stride.tolist())
+        expected_strides = (8.0, 16.0, 32.0)
+        if strides != expected_strides:
+            raise ValueError(
+                f"STAL-16 requires the standard P3/P4/P5 detection strides {expected_strides}, but received {strides}."
+            )
+        self.assigner = STALTaskAlignedAssigner(
+            topk=tal_topk,
+            num_classes=self.nc,
+            alpha=0.5,
+            beta=6.0,
+            strides=strides,
+        )
 
 
 class v8SegmentationLoss(v8DetectionLoss):
