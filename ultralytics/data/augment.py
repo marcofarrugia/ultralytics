@@ -1419,6 +1419,139 @@ class RandomHSV:
         return labels
 
 
+class UnderwaterColorRandomTransfer:
+    """Randomly transfer an image between plausible underwater color casts in HSV space.
+
+    This is an Ultralytics-compatible backport of the official UCRT transform from Liu et al., "UnitModule: A
+    Lightweight Joint Image Enhancement Module for Underwater Object Detection," Pattern Recognition 151 (2024).
+    The source behaviour is pinned at:
+    https://github.com/LEFTeyex/UnitModule/blob/039c015324930326b9ba19cf73b9ae884bea9193/
+    unitmodule/datasets/transforms/colorspace.py
+
+    UCRT independently enables hue, saturation, and value changes. Hue changes are constrained by the observed
+    underwater mean-hue interval, while saturation and value receive clipped additive shifts. Only ``labels["img"]``
+    is replaced; annotations and all other metadata remain untouched.
+
+    Attributes:
+        underwater_hue_interval (tuple[int, int]): Inclusive underwater mean-hue limits in OpenCV HSV units.
+        hue_prob (float): Probability of applying the hue transfer.
+        saturation_prob (float): Probability of applying the saturation transfer.
+        value_prob (float): Probability of applying the value transfer.
+        hue_delta (int): Maximum absolute hue displacement.
+        saturation_delta (int): Maximum absolute saturation displacement.
+        value_delta (int): Maximum absolute value displacement.
+    """
+
+    underwater_hue_interval = (18, 116)
+
+    def __init__(
+        self,
+        hue_prob: float = 0.5,
+        saturation_prob: float = 0.5,
+        value_prob: float = 0.5,
+        hue_delta: int = 5,
+        saturation_delta: int = 30,
+        value_delta: int = 30,
+    ) -> None:
+        """Initialize UCRT with the defaults used by the official implementation."""
+        probabilities = {
+            "hue_prob": hue_prob,
+            "saturation_prob": saturation_prob,
+            "value_prob": value_prob,
+        }
+        for name, probability in probabilities.items():
+            if not 0.0 <= probability <= 1.0:
+                raise ValueError(f"{name} must be in [0, 1], but received {probability}")
+
+        deltas = {"hue_delta": hue_delta, "saturation_delta": saturation_delta, "value_delta": value_delta}
+        for name, delta in deltas.items():
+            if delta < 0:
+                raise ValueError(f"{name} must be non-negative, but received {delta}")
+
+        self.hue_prob = hue_prob
+        self.saturation_prob = saturation_prob
+        self.value_prob = value_prob
+        self.hue_delta = hue_delta
+        self.saturation_delta = saturation_delta
+        self.value_delta = value_delta
+        self._hue_min, self._hue_max = self.underwater_hue_interval
+
+    def _random_hue(self) -> bool:
+        """Return whether to apply the independently sampled hue transfer."""
+        return np.random.rand() < self.hue_prob
+
+    def _random_saturation(self) -> bool:
+        """Return whether to apply the independently sampled saturation transfer."""
+        return np.random.rand() < self.saturation_prob
+
+    def _random_value(self) -> bool:
+        """Return whether to apply the independently sampled value transfer."""
+        return np.random.rand() < self.value_prob
+
+    @staticmethod
+    def _random_multiplier() -> float:
+        """Sample the official continuous multiplier from [-1, 1)."""
+        return np.random.uniform(-1, 1)
+
+    def _get_hue_gain(self, img: np.ndarray) -> np.ndarray:
+        """Sample an integer hue gain directed toward, or retained within, the underwater interval."""
+        hue_mean = np.mean(cv2.cvtColor(img, cv2.COLOR_BGR2HSV)[..., 0])
+        hue_gain = self._random_multiplier() * self.hue_delta
+
+        if self._hue_min < hue_mean < self._hue_max:
+            hue = np.clip(hue_mean + hue_gain, self._hue_min, self._hue_max)
+            hue_gain = hue - hue_mean
+        else:
+            hue_gain = np.abs(hue_gain)
+            if hue_mean >= self._hue_max:
+                hue_gain = -hue_gain
+
+        return np.array(hue_gain, dtype=np.int16)
+
+    def _get_saturation_gain(self) -> np.ndarray:
+        """Sample the official integer saturation gain."""
+        return np.array(self._random_multiplier() * self.saturation_delta, dtype=np.int16)
+
+    def _get_value_gain(self) -> np.ndarray:
+        """Sample the official integer value gain."""
+        return np.array(self._random_multiplier() * self.value_delta, dtype=np.int16)
+
+    def __call__(self, labels: dict[str, Any]) -> dict[str, Any]:
+        """Apply UCRT to ``labels['img']`` while preserving every non-image field."""
+        img = labels["img"]
+        if not isinstance(img, np.ndarray):
+            raise TypeError(f"UCRT requires labels['img'] to be a numpy array, but received {type(img).__name__}")
+        if img.dtype != np.uint8:
+            raise TypeError(f"UCRT requires a uint8 image, but received {img.dtype}")
+        if img.ndim != 3 or img.shape[-1] != 3:
+            raise ValueError(f"UCRT requires a three-channel BGR image, but received shape {img.shape}")
+
+        hue_enabled = self._random_hue()
+        saturation_enabled = self._random_saturation()
+        value_enabled = self._random_value()
+        if not any((hue_enabled, saturation_enabled, value_enabled)):
+            return labels
+
+        img_hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV).astype(np.int16)
+        if hue_enabled:
+            img_hsv[..., 0] = (img_hsv[..., 0] + self._get_hue_gain(img)) % 180
+        if saturation_enabled:
+            img_hsv[..., 1] = np.clip(img_hsv[..., 1] + self._get_saturation_gain(), 0, 255)
+        if value_enabled:
+            img_hsv[..., 2] = np.clip(img_hsv[..., 2] + self._get_value_gain(), 0, 255)
+
+        labels["img"] = cv2.cvtColor(img_hsv.astype(np.uint8), cv2.COLOR_HSV2BGR)
+        return labels
+
+    def __repr__(self) -> str:
+        """Return a reproducible string representation of the UCRT configuration."""
+        return (
+            f"{self.__class__.__name__}(underwater_hue_interval={self.underwater_hue_interval}, "
+            f"hue_prob={self.hue_prob}, saturation_prob={self.saturation_prob}, value_prob={self.value_prob}, "
+            f"hue_delta={self.hue_delta}, saturation_delta={self.saturation_delta}, value_delta={self.value_delta})"
+        )
+
+
 class RandomFlip:
     """Apply a random horizontal or vertical flip to an image with a given probability.
 
@@ -2436,7 +2569,7 @@ def v8_transforms(dataset, imgsz: int, hyp: IterableSimpleNamespace, stretch: bo
             MixUp(dataset, pre_transform=pre_transform, p=hyp.mixup),
             CutMix(dataset, pre_transform=pre_transform, p=hyp.cutmix),
             Albumentations(p=1.0, transforms=getattr(hyp, "augmentations", None)),
-            RandomHSV(hgain=hyp.hsv_h, sgain=hyp.hsv_s, vgain=hyp.hsv_v),
+            UnderwaterColorRandomTransfer(),
             RandomFlip(direction="vertical", p=hyp.flipud, flip_idx=flip_idx),
             RandomFlip(direction="horizontal", p=hyp.fliplr, flip_idx=flip_idx),
         ]
