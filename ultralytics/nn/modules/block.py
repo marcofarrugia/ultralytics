@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import random
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -37,6 +39,7 @@ __all__ = (
     "C2fPSA",
     "C3Ghost",
     "C3k2",
+    "C3k2MixStyle",
     "C3x",
     "CBFuse",
     "CBLinear",
@@ -45,6 +48,7 @@ __all__ = (
     "HGBlock",
     "HGStem",
     "ImagePoolingAttn",
+    "MixStyle",
     "Proto",
     "RepC3",
     "RepNCSPELAN4",
@@ -1082,6 +1086,93 @@ class C3k2(C2f):
         self.m = nn.ModuleList(
             C3k(self.c, self.c, 2, shortcut, g) if c3k else Bottleneck(self.c, self.c, shortcut, g) for _ in range(n)
         )
+
+
+class MixStyle(nn.Module):
+    """Mix instance-level feature statistics during training to synthesize latent visual domains.
+
+    This is an Ultralytics-compatible backport of Zhou et al., "Domain Generalization with MixStyle," ICLR 2021.
+    Paper: https://openreview.net/forum?id=6xHJ37MVxxp
+    The reference behaviour is pinned at:
+    https://github.com/KaiyangZhou/mixstyle-release/blob/16f7cf1fe2c7b1b3c660c72b32817ebb0545397a/README.md
+
+    The ablation uses only random batch mixing. It deliberately does not infer source domains or require dataset
+    metadata. The module is parameter-free and is an exact identity outside an activated training pass.
+    """
+
+    def __init__(self, p: float = 0.5, alpha: float = 0.1, eps: float = 1e-6) -> None:
+        """Initialize MixStyle using the official default probability and Beta-distribution shape."""
+        super().__init__()
+        if not 0.0 <= p <= 1.0:
+            raise ValueError(f"p must be in [0, 1], but received {p}")
+        if alpha <= 0.0:
+            raise ValueError(f"alpha must be positive, but received {alpha}")
+        if eps <= 0.0:
+            raise ValueError(f"eps must be positive, but received {eps}")
+        self.p = p
+        self.alpha = alpha
+        self.eps = eps
+        self.beta = torch.distributions.Beta(alpha, alpha)
+        self._activated = True
+
+    def set_activation_status(self, status: bool = True) -> None:
+        """Enable or disable MixStyle without changing the model structure."""
+        self._activated = bool(status)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Mix detached per-instance channel statistics across a randomly permuted training batch."""
+        if not self.training or not self._activated:
+            return x
+        if x.ndim != 4:
+            raise ValueError(f"MixStyle expects a BCHW tensor, but received shape {tuple(x.shape)}")
+        batch_size = x.shape[0]
+        if batch_size < 2 or random.random() > self.p:
+            return x
+
+        mu = x.mean(dim=(2, 3), keepdim=True)
+        var = x.var(dim=(2, 3), keepdim=True)
+        sig = (var + self.eps).sqrt()
+        mu, sig = mu.detach(), sig.detach()
+        normalized = (x - mu) / sig
+
+        mixing_weight = self.beta.sample((batch_size, 1, 1, 1)).to(device=x.device, dtype=x.dtype)
+        permutation = torch.randperm(batch_size, device=x.device)
+        mixed_mu = mu * mixing_weight + mu[permutation] * (1 - mixing_weight)
+        mixed_sig = sig * mixing_weight + sig[permutation] * (1 - mixing_weight)
+        return normalized * mixed_sig + mixed_mu
+
+    def __repr__(self) -> str:
+        """Return the active MixStyle hyperparameters."""
+        return f"{self.__class__.__name__}(p={self.p}, alpha={self.alpha}, eps={self.eps})"
+
+
+class C3k2MixStyle(C3k2):
+    """C3k2 with parameter-free MixStyle applied only to the completed block output."""
+
+    def __init__(
+        self,
+        c1: int,
+        c2: int,
+        n: int = 1,
+        c3k: bool = False,
+        e: float = 0.5,
+        g: int = 1,
+        shortcut: bool = True,
+        mixstyle_p: float = 0.5,
+        mixstyle_alpha: float = 0.1,
+        mixstyle_eps: float = 1e-6,
+    ) -> None:
+        """Initialize a state-dictionary-compatible C3k2 block followed by MixStyle."""
+        super().__init__(c1, c2, n, c3k, e, g, shortcut)
+        self.mixstyle = MixStyle(p=mixstyle_p, alpha=mixstyle_alpha, eps=mixstyle_eps)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Apply MixStyle after the standard chunk-based C3k2 forward pass."""
+        return self.mixstyle(super().forward(x))
+
+    def forward_split(self, x: torch.Tensor) -> torch.Tensor:
+        """Apply MixStyle after the standard split-based C3k2 forward pass."""
+        return self.mixstyle(super().forward_split(x))
 
 
 class C3k(C3):
