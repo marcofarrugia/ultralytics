@@ -2,6 +2,8 @@
 
 The audit is read-only: it constructs temporary CPU models, runs Ultralytics'
 normal loader, and reports parameter coverage. It never re-keys or saves weights.
+The dataset YAML supplies only the class count and input channels; split paths
+are ignored, so images, labels and split manifests are not required.
 """
 
 from __future__ import annotations
@@ -14,8 +16,8 @@ from pathlib import Path
 from typing import Any
 
 import torch
+import yaml
 
-from ultralytics.data.utils import check_det_dataset
 from ultralytics.nn.modules import Detect
 from ultralytics.nn.tasks import DetectionModel, guess_model_scale, load_checkpoint
 from ultralytics.utils.torch_utils import intersect_dicts
@@ -23,6 +25,34 @@ from ultralytics.utils.torch_utils import intersect_dicts
 
 _LAYER_KEY = re.compile(r"^model\.(\d+)(?:\.|$)")
 _FIRST_CONV_KEY = "model.0.conv.weight"
+
+
+def _load_dataset_metadata(path: Path) -> tuple[int, int]:
+    """Read and validate model metadata without resolving or checking dataset paths."""
+    with path.open(encoding="utf-8") as file:
+        data = yaml.safe_load(file)
+    if not isinstance(data, dict):
+        raise TypeError("The dataset YAML must contain a mapping.")
+    if "nc" not in data and "names" not in data:
+        raise ValueError("The dataset YAML must define 'nc' or 'names'.")
+
+    if "names" in data:
+        names = data["names"]
+        if not isinstance(names, (list, dict)) or not names:
+            raise ValueError("Dataset 'names' must be a non-empty list or dictionary.")
+        if isinstance(names, dict) and {str(key) for key in names} != {str(i) for i in range(len(names))}:
+            raise ValueError("Dataset 'names' dictionary must use consecutive class indices starting at 0.")
+        nc = data.get("nc", len(names))
+    else:
+        nc = data["nc"]
+    channels = data.get("channels", 3)
+
+    for key, value in (("nc", nc), ("channels", channels)):
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise ValueError(f"Dataset '{key}' must be a positive integer; got {value!r}.")
+    if "names" in data and len(data["names"]) != nc:
+        raise ValueError(f"Dataset 'names' length {len(data['names'])} does not match 'nc' {nc}.")
+    return nc, channels
 
 
 def _layer_index(key: str) -> int | None:
@@ -592,8 +622,7 @@ def audit(
     if submodule_map_path is not None and not submodule_map_path.is_file():
         raise FileNotFoundError(f"The submodule map does not exist: {submodule_map_path}")
 
-    data = check_det_dataset(str(data_path), autodownload=False)
-    nc, channels = int(data["nc"]), int(data.get("channels", 3))
+    nc, channels = _load_dataset_metadata(data_path)
     source, _ = load_checkpoint(str(weights_path), device="cpu")
     if not isinstance(source, DetectionModel):
         raise TypeError(f"The checkpoint contains {type(source).__name__}, not a YOLO DetectionModel.")
@@ -648,15 +677,20 @@ def _parse_args() -> argparse.Namespace:
         epilog=(
             "Examples:\n"
             "  python audit_pretrained_transfer.py --model yolo11m_sppf_removed.yaml "
-            "--weights yolo11m.pt --data C:\\Datasets\\UOD_Dataset\\data_split.yaml\n"
+            "--weights yolo11m.pt --data inputs/data_split.yaml\n"
             "  python audit_pretrained_transfer.py --model yolo11m_reordered.yaml "
-            "--weights yolo11m.pt --data C:\\Datasets\\UOD_Dataset\\data_split.yaml "
+            "--weights yolo11m.pt --data inputs/data_split.yaml "
             "--semantic-map yolo11m_reordered_map.json"
         ),
     )
     parser.add_argument("--model", type=Path, required=True, help="Ablation model YAML.")
     parser.add_argument("--weights", type=Path, required=True, help="Local pretrained checkpoint.")
-    parser.add_argument("--data", type=Path, required=True, help="Target dataset YAML.")
+    parser.add_argument(
+        "--data",
+        type=Path,
+        required=True,
+        help="Dataset YAML with 'nc' or 'names' and optional 'channels' (default 3); split paths are ignored.",
+    )
     parser.add_argument(
         "--semantic-map",
         type=Path,
