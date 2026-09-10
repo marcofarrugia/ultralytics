@@ -8,7 +8,7 @@ The research investigates whether targeted modifications to YOLO11 can improve u
 
 ## Repository Basis
 
-This repository is a research fork of the [Ultralytics](https://github.com/ultralytics/ultralytics) repository.
+This repository is a research fork based on [Ultralytics YOLO v8.3.244](https://github.com/ultralytics/ultralytics/releases/tag/v8.3.244).
 
 Ultralytics provides the underlying YOLO11 training, validation, inference and model-construction framework. This fork contains only the modifications required for the dissertation experiments and is not an independent implementation of YOLO11.
 
@@ -181,9 +181,33 @@ This repository is under active development as part of an academic dissertation.
 
 ## Citation
 
-Citation information for the dissertation, source code and dataset will be added following submission or publication.
+If you use the architectural or bounding-box regression loss ablation implementations in this repository, please cite **Underwater YOLO11 Ablations** and the upstream **Ultralytics YOLO v8.3.244** release.
 
-Users of the underlying framework should also cite Ultralytics YOLO and the relevant YOLO literature.
+Citation metadata for the fork and its upstream foundation is provided in [CITATION.cff](CITATION.cff).
+
+### Dissertation ablation implementations
+
+```bibtex
+@software{FarrugiaYOLO11Ablations,
+  author = {Farrugia, Marco},
+  title  = {{Underwater YOLO11 Ablations}},
+  url    = {https://github.com/marcofarrugia/ultralytics},
+  note   = {Custom fork of Ultralytics YOLO v8.3.244 containing
+            architectural and bounding-box regression loss
+            ablation implementations for underwater object detection}
+}
+```
+### Upstream framework
+
+```bibtex
+@software{Ultralytics_v8_3_244,
+  author  = {Jocher, Glenn and Qiu, Jing and Chaurasia, Ayush},
+  title   = {{Ultralytics YOLO}},
+  version = {8.3.244},
+  url     = {https://github.com/ultralytics/ultralytics/releases/tag/v8.3.244}
+}
+```
+When reporting an experiment, identify the ablation branch and the exact source revision where available, together with the model and training configuration. A repository citation identifies the software project; the experiment-specific records identify the implementation used.
 
 ## Licence
 
