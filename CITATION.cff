@@ -1,26 +1,33 @@
-# This CITATION.cff file was generated with https://bit.ly/cffinit
-
-cff-version: 1.2.0
-title: Ultralytics YOLO
-message: >-
-  If you use this software, please cite it using the
-  metadata from this file.
+cff-version: "1.2.0"
 type: software
+title: "Underwater YOLO11 Ablations"
+message: >-
+  If you use the ablation implementations in this repository, please cite
+  this software and the upstream Ultralytics release listed in references.
+
 authors:
-  - given-names: Glenn
-    family-names: Jocher
-    affiliation: Ultralytics
-    orcid: "https://orcid.org/0000-0001-5950-6979"
-  - family-names: Qiu
-    given-names: Jing
-    affiliation: Ultralytics
-    orcid: "https://orcid.org/0000-0003-3783-7069"
-  - given-names: Ayush
-    family-names: Chaurasia
-    affiliation: Ultralytics
-    orcid: "https://orcid.org/0000-0002-7603-6750"
-repository-code: "https://github.com/ultralytics/ultralytics"
-url: "https://ultralytics.com"
+  - family-names: Farrugia
+    given-names: Marco
+
+abstract: >-
+  Custom fork of Ultralytics YOLO v8.3.244 containing the architectural
+  and bounding-box regression loss ablation implementations developed
+  for an underwater object detection dissertation.
+
+repository-code: "https://github.com/marcofarrugia/ultralytics"
+url: "https://github.com/marcofarrugia/ultralytics"
 license: AGPL-3.0
-version: 8.0.0
-date-released: "2023-01-10"
+
+references:
+  - type: software
+    title: "Ultralytics YOLO"
+    authors:
+      - family-names: Jocher
+        given-names: Glenn
+      - family-names: Qiu
+        given-names: Jing
+      - family-names: Chaurasia
+        given-names: Ayush
+    version: "8.3.244"
+    repository-code: "https://github.com/ultralytics/ultralytics"
+    url: "https://github.com/ultralytics/ultralytics/releases/tag/v8.3.244"
