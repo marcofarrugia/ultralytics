@@ -121,7 +121,7 @@ These checks verify implementation correctness but do not replace experimental e
 
 ## Training and Evaluation
 
-Training and dataset evaluation are performed through separate Google Colab notebooks maintained outside this repository.
+Training and dataset evaluation were performed using Google Colab notebooks. Copies with saved outputs are included in the dissertation supplement; see [dissertation/README.md](dissertation/README.md).
 
 This repository focuses on:
 
@@ -158,7 +158,7 @@ GPU-enabled PyTorch should be installed using the version appropriate for the av
 
 The experiments use a fixed underwater object-detection dataset described in the dissertation methodology.
 
-The dataset, annotations and train-validation-test manifests are maintained separately. Access and citation information will be added following formal publication or archival deposit.
+Dataset images and per-image YOLO labels are maintained separately. The supplement includes the dataset configuration, split manifests, group assignments and shared COCO test annotations; see [dissertation/README.md](dissertation/README.md).
 
 ## Reproducibility
 
@@ -172,10 +172,6 @@ Each reported experiment should be associated with:
 - software and hardware environment;
 - random seed;
 - evaluation results.
-
-## Project Status
-
-This repository is under active development as part of an academic dissertation. Implementations and experimental branches may change until the experiments are completed.
 
 ## Citation
 
