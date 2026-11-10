@@ -130,7 +130,7 @@ This repository focuses on:
 - implementation auditing;
 - model-construction and tensor-shape verification.
 
-Datasets, model checkpoints and training outputs are not committed to this repository.
+Datasets and model checkpoints are not committed to this repository.
 
 ## Installation
 
@@ -164,7 +164,7 @@ The dataset, annotations and train-validation-test manifests are maintained sepa
 
 Each reported experiment should be associated with:
 
-- Git branch and commit SHA;
+- Git branch;
 - model configuration and scale;
 - pretrained checkpoint;
 - dataset version and split;
@@ -172,8 +172,6 @@ Each reported experiment should be associated with:
 - software and hardware environment;
 - random seed;
 - evaluation results.
-
-The commit SHA identifies the exact implementation used for an experiment.
 
 ## Project Status
 
