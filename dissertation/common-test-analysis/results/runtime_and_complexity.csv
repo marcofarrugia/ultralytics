@@ -1,0 +1,5 @@
+model,role,inference_ms,end_to_end_ms,parameters,gflops,gpu,batch,inference_fps,end_to_end_fps,inference_delta_ms,inference_delta_percent,end_to_end_delta_ms,end_to_end_delta_percent
+YOLO11m baseline,Matched baseline,1.33,1.85,20040826,67.7,NVIDIA RTX PRO 6000 Blackwell Server Edition,128,751.8796992481202,540.5405405405405,0.0,0.0,0.0,0.0
+CBAM before Detect,Validation-selected candidate,1.4,1.9,20116211,67.8,NVIDIA RTX PRO 6000 Blackwell Server Edition,128,714.2857142857143,526.3157894736843,0.06999999999999984,5.26315789473683,0.04999999999999982,2.702702702702693
+DW-HDC-SPPF,Validation-selected candidate,1.33,1.84,20048506,67.7,NVIDIA RTX PRO 6000 Blackwell Server Edition,128,751.8796992481202,543.4782608695652,0.0,0.0,-0.010000000000000009,-0.540540540540541
+YOLO26m,Separate comparator,1.32,1.64,20360246,68.1,NVIDIA RTX PRO 6000 Blackwell Server Edition,128,757.5757575757575,609.7560975609756,-0.010000000000000009,-0.7518796992481209,-0.2100000000000002,-11.35135135135136

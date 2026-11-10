@@ -1,0 +1,41 @@
+model,role,metric,metric_label,value
+YOLO11m baseline,Matched baseline,AP_all,AP@[0.50:0.95],0.2931518766114632
+YOLO11m baseline,Matched baseline,AP_50,AP@0.50,0.4258818719814753
+YOLO11m baseline,Matched baseline,AP_75,AP@0.75,0.30903598926023784
+YOLO11m baseline,Matched baseline,AP_small,AP-small,0.1090709261309848
+YOLO11m baseline,Matched baseline,AP_medium,AP-medium,0.22634313959597138
+YOLO11m baseline,Matched baseline,AP_large,AP-large,0.32849221373835824
+YOLO11m baseline,Matched baseline,AR_third,AR@100,0.3890350141405005
+YOLO11m baseline,Matched baseline,AR_small,AR-small,0.1747722567287785
+YOLO11m baseline,Matched baseline,AR_medium,AR-medium,0.30591817549547184
+YOLO11m baseline,Matched baseline,AR_large,AR-large,0.42506095073308736
+CBAM before Detect,Validation-selected candidate,AP_all,AP@[0.50:0.95],0.3041817538644303
+CBAM before Detect,Validation-selected candidate,AP_50,AP@0.50,0.4427062930536371
+CBAM before Detect,Validation-selected candidate,AP_75,AP@0.75,0.3192575893734425
+CBAM before Detect,Validation-selected candidate,AP_small,AP-small,0.11326754420482839
+CBAM before Detect,Validation-selected candidate,AP_medium,AP-medium,0.23922307913027657
+CBAM before Detect,Validation-selected candidate,AP_large,AP-large,0.33759156637994686
+CBAM before Detect,Validation-selected candidate,AR_third,AR@100,0.4119030670464496
+CBAM before Detect,Validation-selected candidate,AR_small,AR-small,0.1939648033126294
+CBAM before Detect,Validation-selected candidate,AR_medium,AR-medium,0.32038650916011346
+CBAM before Detect,Validation-selected candidate,AR_large,AR-large,0.44309371772448863
+DW-HDC-SPPF,Validation-selected candidate,AP_all,AP@[0.50:0.95],0.3074025083335873
+DW-HDC-SPPF,Validation-selected candidate,AP_50,AP@0.50,0.4501910850628778
+DW-HDC-SPPF,Validation-selected candidate,AP_75,AP@0.75,0.318817437319037
+DW-HDC-SPPF,Validation-selected candidate,AP_small,AP-small,0.11541800881105267
+DW-HDC-SPPF,Validation-selected candidate,AP_medium,AP-medium,0.22987469025759266
+DW-HDC-SPPF,Validation-selected candidate,AP_large,AP-large,0.34137355793088703
+DW-HDC-SPPF,Validation-selected candidate,AR_third,AR@100,0.42727854361601825
+DW-HDC-SPPF,Validation-selected candidate,AR_small,AR-small,0.20994996549344375
+DW-HDC-SPPF,Validation-selected candidate,AR_medium,AR-medium,0.33870290979753814
+DW-HDC-SPPF,Validation-selected candidate,AR_large,AR-large,0.45786633671077154
+YOLO26m,Separate comparator,AP_all,AP@[0.50:0.95],0.30181495426678595
+YOLO26m,Separate comparator,AP_50,AP@0.50,0.43833022923092346
+YOLO26m,Separate comparator,AP_75,AP@0.75,0.3204820017968736
+YOLO26m,Separate comparator,AP_small,AP-small,0.12550098077307764
+YOLO26m,Separate comparator,AP_medium,AP-medium,0.23974825056126897
+YOLO26m,Separate comparator,AP_large,AP-large,0.3317388032797028
+YOLO26m,Separate comparator,AR_third,AR@100,0.4302663377279077
+YOLO26m,Separate comparator,AR_small,AR-small,0.23876639061421667
+YOLO26m,Separate comparator,AR_medium,AR-medium,0.34648939982719207
+YOLO26m,Separate comparator,AR_large,AR-large,0.45805306080356323

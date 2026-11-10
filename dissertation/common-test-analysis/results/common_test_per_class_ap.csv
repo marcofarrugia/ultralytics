@@ -1,0 +1,57 @@
+category_id,category,AP_all,model,role
+1,bivalve,0.09138223885114174,YOLO11m baseline,Matched baseline
+2,bottle,0.10831609765660045,YOLO11m baseline,Matched baseline
+3,cephalopod,0.6616615916114607,YOLO11m baseline,Matched baseline
+4,container,0.044111227302260844,YOLO11m baseline,Matched baseline
+5,diver,0.48355596634180537,YOLO11m baseline,Matched baseline
+6,fish,0.39664817085966986,YOLO11m baseline,Matched baseline
+7,jellyfish,0.548876938463827,YOLO11m baseline,Matched baseline
+8,net,0.00591343139242874,YOLO11m baseline,Matched baseline
+9,rope,0.00455106397619773,YOLO11m baseline,Matched baseline
+10,sea_cucumber,0.19878937220182932,YOLO11m baseline,Matched baseline
+11,sea_star,0.46997222829643204,YOLO11m baseline,Matched baseline
+12,sponge,0.08547699856292212,YOLO11m baseline,Matched baseline
+13,turtle,0.6857618710070656,YOLO11m baseline,Matched baseline
+14,urchin,0.3191090760368427,YOLO11m baseline,Matched baseline
+1,bivalve,0.15483392655088885,CBAM before Detect,Validation-selected candidate
+2,bottle,0.1290161738781763,CBAM before Detect,Validation-selected candidate
+3,cephalopod,0.6655942280299897,CBAM before Detect,Validation-selected candidate
+4,container,0.05088157765259293,CBAM before Detect,Validation-selected candidate
+5,diver,0.5130369413620343,CBAM before Detect,Validation-selected candidate
+6,fish,0.39995835138254365,CBAM before Detect,Validation-selected candidate
+7,jellyfish,0.5541392809779642,CBAM before Detect,Validation-selected candidate
+8,net,0.016895921895426068,CBAM before Detect,Validation-selected candidate
+9,rope,0.008511021150598746,CBAM before Detect,Validation-selected candidate
+10,sea_cucumber,0.21926872749015963,CBAM before Detect,Validation-selected candidate
+11,sea_star,0.46853708804429317,CBAM before Detect,Validation-selected candidate
+12,sponge,0.07061364315852935,CBAM before Detect,Validation-selected candidate
+13,turtle,0.7025848490542157,CBAM before Detect,Validation-selected candidate
+14,urchin,0.3046728234746119,CBAM before Detect,Validation-selected candidate
+1,bivalve,0.1813736377656975,DW-HDC-SPPF,Validation-selected candidate
+2,bottle,0.12612261976464775,DW-HDC-SPPF,Validation-selected candidate
+3,cephalopod,0.6724415143234965,DW-HDC-SPPF,Validation-selected candidate
+4,container,0.0375358329313551,DW-HDC-SPPF,Validation-selected candidate
+5,diver,0.49326518814867604,DW-HDC-SPPF,Validation-selected candidate
+6,fish,0.3956092607269412,DW-HDC-SPPF,Validation-selected candidate
+7,jellyfish,0.5534709402694254,DW-HDC-SPPF,Validation-selected candidate
+8,net,0.009429327502671708,DW-HDC-SPPF,Validation-selected candidate
+9,rope,0.010031519036574095,DW-HDC-SPPF,Validation-selected candidate
+10,sea_cucumber,0.23340810622093802,DW-HDC-SPPF,Validation-selected candidate
+11,sea_star,0.48654699318691835,DW-HDC-SPPF,Validation-selected candidate
+12,sponge,0.0854550965112704,DW-HDC-SPPF,Validation-selected candidate
+13,turtle,0.7091069442874912,DW-HDC-SPPF,Validation-selected candidate
+14,urchin,0.30983813599411897,DW-HDC-SPPF,Validation-selected candidate
+1,bivalve,0.11555194325834157,YOLO26m,Separate comparator
+2,bottle,0.12732361923386795,YOLO26m,Separate comparator
+3,cephalopod,0.6563867321015219,YOLO26m,Separate comparator
+4,container,0.03768103706880401,YOLO26m,Separate comparator
+5,diver,0.5241152957501677,YOLO26m,Separate comparator
+6,fish,0.41066935812620764,YOLO26m,Separate comparator
+7,jellyfish,0.5286526037126287,YOLO26m,Separate comparator
+8,net,0.007927548270620146,YOLO26m,Separate comparator
+9,rope,0.006411261606082519,YOLO26m,Separate comparator
+10,sea_cucumber,0.19692190957318728,YOLO26m,Separate comparator
+11,sea_star,0.49049635463131813,YOLO26m,Separate comparator
+12,sponge,0.07651154459090875,YOLO26m,Separate comparator
+13,turtle,0.703895823249833,YOLO26m,Separate comparator
+14,urchin,0.3428643285615138,YOLO26m,Separate comparator

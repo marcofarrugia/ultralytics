@@ -1,0 +1,5 @@
+model,role,detections,images_with_detections,images_without_detections,degenerate_boxes_retained,maximum_detections_per_image,images_over_coco_maxdets_100
+YOLO11m baseline,Matched baseline,26772,1660,2,18,300,32
+CBAM before Detect,Validation-selected candidate,34981,1660,2,118,300,53
+DW-HDC-SPPF,Validation-selected candidate,42133,1662,0,298,300,60
+YOLO26m,Separate comparator,55882,1661,1,145,300,110

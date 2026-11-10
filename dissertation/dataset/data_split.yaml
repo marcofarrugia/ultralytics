@@ -1,0 +1,19 @@
+train: train/train.txt
+val: train/val.txt
+test: train/test.txt
+nc: 14
+names:
+- bivalve
+- bottle
+- cephalopod
+- container
+- diver
+- fish
+- jellyfish
+- net
+- rope
+- sea_cucumber
+- sea_star
+- sponge
+- turtle
+- urchin
