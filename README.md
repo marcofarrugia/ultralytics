@@ -1,136 +1,72 @@
 # Underwater YOLO11: A Structured Ablation Approach for Improving Object Detection
 
-This repository contains the source-code modifications developed for the Master’s dissertation:
-
-> **Underwater YOLO11: A Structured Ablation Approach for Improving Object Detection**
-
-The research investigates whether targeted modifications to YOLO11 can improve underwater object-detection accuracy while maintaining reasonable real-time inference performance.
+This repository contains the implementations and supplementary materials for the Master's dissertation. The study assessed how targeted modifications to YOLO11m affect underwater object-detection accuracy and computational cost.
 
 ## Repository Basis
 
 This repository is a research fork based on [Ultralytics YOLO v8.3.244](https://github.com/ultralytics/ultralytics/releases/tag/v8.3.244).
 
-Ultralytics provides the underlying YOLO11 training, validation, inference and model-construction framework. This fork contains only the modifications required for the dissertation experiments and is not an independent implementation of YOLO11.
-
-The common experimental baseline is maintained on the `YOLO11-baseline` branch. The [ablation utilities](ablation_code/README.md) include the read-only pretrained-weight transfer audit and its semantic-map examples.
+Ultralytics provides the underlying YOLO11 training, validation, inference and model-construction framework. The common experimental baseline is maintained on the `YOLO11-baseline` branch.
 
 ## Ablation Study
 
-Each architectural modification is evaluated independently against a computationally unmodified YOLO11 baseline. Successful modifications may subsequently be combined and evaluated as a final model.
+The main study compared 19 seed-0 YOLO11m variants individually with the COCO-pretrained YOLO11m baseline (B0) on the validation set. The four loss variants used the baseline architecture and replaced its CIoU bounding-box regression term.
 
-The ablations are organised into the following categories.
-
-### SPPF
-
-- Remove the Spatial Pyramid Pooling–Fast (`SPPF`) block.
-- Replace SPPF max pooling with lightweight depthwise atrous spatial pyramid pooling using Hybrid Dilated Convolution.
-
-### Upsampling
-
-- CARAFE.
-- DySample.
-- Pixel Shuffle with ICNR initialisation.
-
-### Attention
-
-- CBAM.
-- CAFM.
-- Integration of alternative attention mechanisms into `C2PSA`.
-
-### C2PSA
-
-- Alternative channel projection and branch structures.
-- Addition-based and concatenation-based feature fusion.
-- Modified convolutional positional encoding.
-- Relative positional bias.
-- Application of C2PSA at additional feature-pyramid scales.
-
-### Bounding-Box Loss
-
-- CFIoU.
-- DAPIoU.
+| Category | ID | Evaluated variant |
+|---|---|---|
+| SPPF | C1 | SPPF removal using an identity layer |
+| SPPF | C2 | DW-HDC-SPPF |
+| Detection scale | D1 | Terminal P2 detection with corrected pretrained-weight transfer |
+| Upsampling | U1 | CARAFE |
+| Upsampling | U2 | DySample+ |
+| Upsampling | U3 | Depthwise Pixel Shuffle with ICNR |
+| Attention | A1 | CBAM before Detect (P3–P5) |
+| Attention | A2 | C2PSA attention replacement with CAFM |
+| Attention | A3 | C2PSA with parallel CAFM |
+| Attention | A4 | C2PSA full-width concat |
+| Attention | A5 | C2PSA full-width non-concat |
+| Attention | A6 | C2PSA full-width residual fusion |
+| Attention | A7 | C2PSA with iRPE-K |
+| Attention | A8 | C3k2 fusion-bottleneck CrossPSA |
+| Attention | A9 | Post-fusion PSA |
+| Bounding-box regression loss | L1 | CFIoU |
+| Bounding-box regression loss | L2 | InterpIoU |
+| Bounding-box regression loss | L3 | Dynamic InterpIoU |
+| Bounding-box regression loss | L4 | PIoU-v2 |
 
 ## Evaluation Metrics
 
-Average Precision metrics are calculated using the COCO evaluation protocol through the `faster-coco-eval` library.
+The primary accuracy metric was **COCO AP@[.50:.95]**, computed with `faster-coco-eval` and averaged over IoU thresholds from 0.50 to 0.95. The independent COCO results also include AP<sub>50</sub>, AP<sub>75</sub> and AP for small, medium and large objects. **Native Ultralytics mAP<sub>50–95</sub>** was reported separately and used for checkpoint selection.
 
-The reported metrics are:
-
-- **mAP<sub>50–95</sub>** — the primary accuracy metric, averaged over IoU thresholds from 0.50 to 0.95;
-- **AP<sub>50</sub>** — Average Precision at IoU 0.50;
-- **AP<sub>75</sub>** — Average Precision at IoU 0.75;
-- **AP<sub>S</sub>**, **AP<sub>M</sub>** and **AP<sub>L</sub>** — Average Precision for small, medium and large objects;
-- **number of trainable parameters**;
-- **GFLOPs**;
-- **forward-pass latency and throughput**;
-- **end-to-end latency and throughput**, including preprocessing and postprocessing.
-
-The scale-aware metrics are particularly relevant because underwater objects frequently appear at small scales and under low contrast, turbidity and substantial scale variation.
+Computational cost was measured using parameter counts, estimated GFLOPs and per-image forward-pass and pipeline times from batched validator runs. The timed YOLO11m pipeline covers device transfer, precision conversion and normalisation, the forward pass, and non-maximum suppression. Throughput estimates were derived from the corresponding per-image times.
 
 ## Experimental Protocol
 
-To support fair comparisons, the ablation experiments use a common:
+The seed-0 YOLO11m comparisons used the same dataset splits, 640 × 640 inputs, a training batch size of 64 and a common augmentation policy. Models were initialised with compatible weights from the official `yolo11m.pt` checkpoint. The dissertation reports that all training runs completed the full 300 epochs with early stopping disabled.
 
-- dataset split;
-- image resolution;
-- augmentation policy;
-- training schedule;
-- optimiser configuration;
-- random seed and deterministic configuration;
-- scale-matched COCO-pretrained initialisation;
-- evaluation procedure.
-
-The main experiments use YOLO11m. Implementation compatibility is also checked for YOLO11n, YOLO11s, YOLO11l and YOLO11x.
+The runs requested deterministic execution (`deterministic=True`). The DySample+ (U2) training log flags a nondeterministic CUDA grid-sampling operation in the backward pass.
 
 ## Branch Organisation
 
-Each ablation is developed on a separate branch using the convention:
+Ablation implementations use the `ablation/<descriptive-name>` branch convention.
 
-```text
-ablation/<descriptive-name>
-```
+| Variant | Implementation branch |
+|---|---|
+| C2 | `ablation/sppf-dw-hdc-sppf` |
+| A1 | `ablation/attention-cbam-detect-p3-p5` |
+| A4 and A5 | `ablation/c2psa-full-feature-fusion` |
 
-Examples:
-
-```text
-ablation/sppf-remove
-ablation/sppf-dw-aspp-hdc
-ablation/upsample-carafe
-ablation/upsample-dysample
-ablation/attention-cbam
-ablation/c2psa-cafm
-ablation/loss-cfiou
-```
-
-Each branch should contain only the changes required for the corresponding ablation.
-
-## Implementation Verification
-
-Before experimental training, each ablation is checked to confirm that:
-
-- the package imports successfully;
-- the model constructs successfully;
-- forward propagation completes without tensor-shape errors;
-- outputs remain compatible with the detection head;
-- the implementation works across all YOLO11 model scales;
-- parameters are registered correctly;
-- pretrained-weight transfer can be audited using the provided diagnostic utility;
-- parameter and GFLOP changes are recorded.
-
-These checks verify implementation correctness but do not replace experimental evaluation.
+A4 and A5 select distinct model YAMLs on their shared branch. The supplement maps every variant to its implementation branch, selected YAML and executed notebook. [Training and validation notebook index](dissertation/README.md#training-and-validation-notebook-index)
 
 ## Training and Evaluation
 
-Training and dataset evaluation were performed using Google Colab notebooks. Copies with saved outputs are included in the dissertation supplement; see [dissertation/README.md](dissertation/README.md).
+The supplement contains the executed Google Colab notebooks for training, validation and held-out evaluation. Reproducing training and model-specific evaluation requires the corresponding dataset images, YOLO labels and checkpoints. The common held-out analysis uses the supplied COCO annotations and saved predictions. [Dissertation supplement](dissertation/README.md)
 
-This repository focuses on:
+### Validation and Held-Out Results
 
-- architecture and loss-function implementation;
-- model configuration;
-- implementation auditing;
-- model-construction and tensor-shape verification.
+On validation, four variants exceeded B0 in overall independent COCO AP. All 19 had lower small-object COCO AP and scored at or below B0 in native Ultralytics mAP<sub>50–95</sub>. The validation-only ROC-weighted VIKOR ranking placed A1 first and C2 second. [Validation ranking workbook](dissertation/analysis/yolo11m_ablation_vikor_analysis.xlsx)
 
-Datasets and model checkpoints are not committed to this repository.
+The held-out panel used the frozen seed-0 checkpoints for B0, A1 and C2, with YOLO26m as a separate framework comparator. Independent COCO AP@[.50:.95] was 29.32% for B0, 30.42% for A1 (+1.10 percentage points) and 30.74% for C2 (+1.43 percentage points). The 95% paired cluster-bootstrap intervals for both overall AP differences lay above zero. The corresponding intervals for small-object AP included zero. [Held-out point estimates](dissertation/common-test-analysis/results/common_test_point_estimates.csv) · [Bootstrap summary](dissertation/common-test-analysis/results/paired_cluster_bootstrap_summary.csv)
 
 ## Installation
 
@@ -156,9 +92,9 @@ GPU-enabled PyTorch should be installed using the version appropriate for the av
 
 ## Dataset
 
-The experiments use a fixed underwater object-detection dataset described in the dissertation methodology.
+The curated underwater dataset contains 16,626 images annotated for 14 classes. The fixed, group-aware split comprises 13,301 training images, 1,663 validation images and 1,662 test images. Images identified as related were assigned to the same split.
 
-Dataset images and per-image YOLO labels are maintained separately. The supplement includes the dataset configuration, split manifests, group assignments and shared COCO test annotations; see [dissertation/README.md](dissertation/README.md).
+Dataset images and per-image YOLO labels are maintained separately. The supplement includes the dataset configuration, split manifests, group assignments and shared COCO test annotations. [Dataset metadata](dissertation/README.md#dataset-metadata)
 
 ## Reproducibility
 

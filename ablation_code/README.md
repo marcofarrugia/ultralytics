@@ -141,29 +141,3 @@ Two `Overriding model.yaml nc=...` messages may be printed. This is expected bec
 If `Semantic alignment: AMBIGUOUS` is reported, review the architecture and provide an explicit semantic map before interpreting semantic transfer.
 
 If `Baseline validation: WARNING` is reported, investigate the listed baseline issues before relying on the ablation comparison.
-
-## Limitations
-
-This utility evaluates pretrained-weight transfer only. It does not establish:
-
-- model accuracy or convergence;
-- whether the ablation improves detection performance;
-- inference latency, memory use, parameters, or FLOPs;
-- export compatibility;
-- the conceptual correctness of an automatically inferred correspondence.
-
-It does not remap parameter keys, force incompatible parameters into the target model, save modified weights, or approve an ablation automatically.
-
-## Reproducibility
-
-When reporting an audit, record:
-
-- the repository commit or submission tag;
-- the ablation model YAML;
-- the checkpoint name and source;
-- the dataset YAML and class count;
-- whether an explicit semantic map was used;
-- whether an explicit submodule map was used;
-- the complete command and terminal output.
-
-Checkpoints, datasets, and local experiment artefacts are not distributed with this utility.
