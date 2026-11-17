@@ -66,6 +66,8 @@ The supplement contains the executed Google Colab notebooks for training, valida
 
 On validation, four variants exceeded B0 in overall independent COCO AP. All 19 had lower small-object COCO AP and scored at or below B0 in native Ultralytics mAP<sub>50–95</sub>. The validation-only ROC-weighted VIKOR ranking placed A1 first and C2 second. [Validation ranking workbook](dissertation/analysis/yolo11m_ablation_vikor_analysis.xlsx)
 
+The [supplementary baseline notebooks](dissertation/README.md#baseline-notebooks) report Ultralytics per-class validation AP for two additional YOLO11m baseline runs trained with seeds 1 and 2.
+
 The held-out panel used the frozen seed-0 checkpoints for B0, A1 and C2, with YOLO26m as a separate framework comparator. Independent COCO AP@[.50:.95] was 29.32% for B0, 30.42% for A1 (+1.10 percentage points) and 30.74% for C2 (+1.43 percentage points). The 95% paired cluster-bootstrap intervals for both overall AP differences lay above zero. The corresponding intervals for small-object AP included zero. [Held-out point estimates](dissertation/common-test-analysis/results/common_test_point_estimates.csv) · [Bootstrap summary](dissertation/common-test-analysis/results/paired_cluster_bootstrap_summary.csv)
 
 ## Installation

@@ -7,7 +7,7 @@ This folder contains the supplementary materials for the dissertation *Underwate
 | Folder | Contents |
 |---|---|
 | notebooks/ablations/ | Nineteen seed-0 YOLO11m ablation records |
-| notebooks/baselines/ | Pretrained and scratch YOLO11m records; YOLO26m comparator |
+| notebooks/baselines/ | Pretrained YOLO11m runs at seeds 0, 1 and 2, the scratch YOLO11m run, and the YOLO26m comparator |
 | notebooks/test/ | Four model-specific held-out evaluation records |
 | common-test-analysis/ | Common analysis notebook, shared COCO test ground truth and splits.csv |
 | common-test-analysis/predictions/ | Aligned predictions in B0, A1, C2 and YOLO26m subfolders |
@@ -43,11 +43,15 @@ Files are under notebooks/ablations/. The selected YAML names below are the scal
 | L3 | YOLO11m_ablation_dynamic-InterpIoU_v4.ipynb | ablation/loss-dynamic-interpiou | yolo11m.yaml |
 | L4 | YOLO11m_ablation_PIoU-v2_v4.ipynb | ablation/loss-piou | yolo11m.yaml |
 
-Baseline files are under notebooks/baselines/. The pretrained YOLO11m notebook serves both as B0 and as the pretrained member of the initialisation (pretrained / from scratch) comparison.
+### Baseline notebooks
+
+Baseline files are under `notebooks/baselines/`. The seed-0 pretrained YOLO11m notebook serves as B0 and as the pretrained member of the initialisation comparison. The supplementary seed-1 and seed-2 baseline notebooks report Ultralytics per-class AP on the same validation split. They provide a descriptive check of variation across baseline runs. The ablation comparisons, VIKOR ranking and held-out assessment use the original seed-0 YOLO11m runs.
 
 | Role | Notebook filename | Implementation | Selected model YAML |
 |---|---|---|---|
-| B0 / pretrained initialisation | YOLO11m_baseline_training_v4.ipynb | YOLO11-baseline | yolo11m.yaml |
+| B0 (seed 0) / pretrained initialisation | YOLO11m_baseline_training_v4.ipynb | YOLO11-baseline | yolo11m.yaml |
+| Supplementary baseline, seed 1 | [YOLO11m_baseline-SEED1_training_v4.ipynb](notebooks/baselines/YOLO11m_baseline-SEED1_training_v4.ipynb) | YOLO11-baseline | yolo11m.yaml |
+| Supplementary baseline, seed 2 | [YOLO11m_baseline-SEED2_training_v4.ipynb](notebooks/baselines/YOLO11m_baseline-SEED2_training_v4.ipynb) | YOLO11-baseline | yolo11m.yaml |
 | Scratch initialisation | YOLO11m_baseline_training_scratch_v3.ipynb | YOLO11-baseline | yolo11m.yaml |
 | YOLO26m framework comparator | YOLO26m_baseline_training_v4.ipynb | official Ultralytics v8.4.115 | yolo26m.yaml |
 
