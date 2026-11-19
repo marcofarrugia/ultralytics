@@ -6,9 +6,9 @@ This folder contains the supplementary materials for the dissertation *Underwate
 
 | Folder | Contents |
 |---|---|
-| notebooks/ablations/ | Nineteen seed-0 YOLO11m ablation records |
+| notebooks/ablations/ | Nineteen seed-0 YOLO11m ablation notebooks and four supplementary A1 and C2 training and validation notebooks |
 | notebooks/baselines/ | Pretrained YOLO11m runs at seeds 0, 1 and 2, the scratch YOLO11m run, and the YOLO26m comparator |
-| notebooks/test/ | Four model-specific held-out evaluation records |
+| notebooks/test/ | Four primary held-out evaluation notebooks and six supplementary evaluations at seeds 1 and 2 |
 | common-test-analysis/ | Common analysis notebook, shared COCO test ground truth and splits.csv |
 | common-test-analysis/predictions/ | Aligned predictions in B0, A1, C2 and YOLO26m subfolders |
 | common-test-analysis/results/ | Seven saved CSV outputs, including completed bootstrap draws |
@@ -19,7 +19,7 @@ Images, per-image YOLO label files and model checkpoints are not included. The s
 
 ## Training and validation notebook index
 
-Files are under notebooks/ablations/. The selected YAML names below are the scale-specific names passed to Ultralytics. They may resolve to a shared YAML without the scale letter under ultralytics/cfg/models/11/ on the named branch.
+The table lists the nineteen seed-0 ablations used for the validation ranking. Files are under notebooks/ablations/. The selected YAML names below are the scale-specific names passed to Ultralytics. They may resolve to a shared YAML without the scale letter under ultralytics/cfg/models/11/ on the named branch.
 
 | ID | Notebook filename | Implementation branch | Selected model YAML |
 |---|---|---|---|
@@ -45,7 +45,7 @@ Files are under notebooks/ablations/. The selected YAML names below are the scal
 
 ### Baseline notebooks
 
-Baseline files are under `notebooks/baselines/`. The seed-0 pretrained YOLO11m notebook serves as B0 and as the pretrained member of the initialisation comparison. The supplementary seed-1 and seed-2 baseline notebooks report Ultralytics per-class AP on the same validation split. They provide a descriptive check of variation across baseline runs. The ablation comparisons, VIKOR ranking and held-out assessment use the original seed-0 YOLO11m runs.
+Baseline files are under `notebooks/baselines/`. The seed-0 pretrained YOLO11m notebook serves as B0 and as the pretrained member of the initialisation comparison. The supplementary seed-1 and seed-2 baseline notebooks report Ultralytics per-class AP on the same validation split and provide the matched baselines for the A1 and C2 comparisons below.
 
 | Role | Notebook filename | Implementation | Selected model YAML |
 |---|---|---|---|
@@ -59,12 +59,24 @@ The listed branches identify the relevant implementations.
 
 ## Held-out notebooks and files
 
-Model-specific notebooks are under notebooks/test/:
+The four primary model-specific notebooks are under `notebooks/test/`:
 
 - YOLO11m_ablation_CBAM_Test_v4.ipynb
 - YOLO11m_ablation_DW-HDC-SPPF_Test_v4.ipynb
 - YOLO11m_baseline_Test_v4.ipynb
 - YOLO26m_baseline_Test_v4.ipynb
+
+### Supplementary runs at seeds 1 and 2
+
+After candidate selection, A1 and C2 were trained at two additional seeds and compared with the YOLO11m baseline trained at the same seed. Each linked notebook reports independent COCO scores on its respective split. The validation ranking used the nineteen seed-0 variants, and the paired cluster bootstrap used the primary held-out checkpoints.
+
+| Model | Training and validation | Held-out test |
+|---|---|---|
+| YOLO11m baseline | [Seed 1](notebooks/baselines/YOLO11m_baseline-SEED1_training_v4.ipynb) · [Seed 2](notebooks/baselines/YOLO11m_baseline-SEED2_training_v4.ipynb) | [Seed 1](notebooks/test/YOLO11m_baseline-SEED1_Test_v4.ipynb) · [Seed 2](notebooks/test/YOLO11m_baseline-SEED2_Test_v4.ipynb) |
+| A1 (CBAM before Detect) | [Seed 1](notebooks/ablations/YOLO11m_ablation_CBAM-SEED1_v4.ipynb) · [Seed 2](notebooks/ablations/YOLO11m_ablation_CBAM-SEED2_v4.ipynb) | [Seed 1](notebooks/test/YOLO11m_ablation_CBAM-SEED1_Test_v4.ipynb) · [Seed 2](notebooks/test/YOLO11m_ablation_CBAM-SEED2_Test_v4.ipynb) |
+| C2 (DW-HDC-SPPF) | [Seed 1](notebooks/ablations/YOLO11m_ablation_DW-HDC-SPPF-SEED1_v4.ipynb) · [Seed 2](notebooks/ablations/YOLO11m_ablation_DW-HDC-SPPF-SEED2_v4.ipynb) | [Seed 1](notebooks/test/YOLO11m_ablation_DW-HDC-SPPF-SEED1_Test_v4.ipynb) · [Seed 2](notebooks/test/YOLO11m_ablation_DW-HDC-SPPF-SEED2_Test_v4.ipynb) |
+
+### Common analysis of the primary test panel
 
 The common analysis notebook is YOLO11m_Common_Test_Analysis_Cluster_Bootstrap_v4.ipynb under common-test-analysis/. That folder also contains:
 
