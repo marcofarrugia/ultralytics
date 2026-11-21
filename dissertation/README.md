@@ -9,13 +9,13 @@ This folder contains the supplementary materials for the dissertation *Underwate
 | notebooks/ablations/ | Nineteen seed-0 YOLO11m ablation notebooks and four supplementary A1 and C2 training and validation notebooks |
 | notebooks/baselines/ | Pretrained YOLO11m runs at seeds 0, 1 and 2, the scratch YOLO11m run, and the YOLO26m comparator |
 | notebooks/test/ | Four primary held-out evaluation notebooks and six supplementary evaluations at seeds 1 and 2 |
-| common-test-analysis/ | Common analysis notebook, shared COCO test ground truth and splits.csv |
+| common-test-analysis/ | Cluster bootstrap and held-out detection example notebooks, shared COCO test ground truth and splits.csv |
 | common-test-analysis/predictions/ | Aligned predictions in B0, A1, C2 and YOLO26m subfolders |
 | common-test-analysis/results/ | Seven saved CSV outputs, including completed bootstrap draws |
 | dataset/ | Dataset configuration and train/validation/test manifests |
 | analysis/ | yolo11m_ablation_vikor_analysis.xlsx workbook |
 
-Images, per-image YOLO label files and model checkpoints are not included. The source training and model-specific evaluation notebooks retain their Colab setup and original locations; running those notebooks requires the corresponding data, checkpoints and environment. The common test analysis inputs can be used without images or checkpoints.
+The package omits the original dataset images, per-image YOLO label files and model checkpoints. The training and model-specific evaluation notebooks retain their original Colab paths and require the corresponding data, checkpoints and environment. The bootstrap notebook reads its inputs from this package.
 
 ## Training and validation notebook index
 
@@ -97,7 +97,13 @@ Saved files under common-test-analysis/results/:
 - runtime_and_complexity.csv
 - test_image_groups.csv
 
-## Opening the common analysis
+### Held-out detection examples
+
+The saved figure in [YOLO11m_Held_Out_Detection_Examples.ipynb](common-test-analysis/YOLO11m_Held_Out_Detection_Examples.ipynb) shows the ground-truth boxes alongside the seed-0 detections from B0, A1 and C2 on six selected held-out test images. Rows (a), (c) and (e) show the three scenes reproduced in Chapter 4.
+
+The figure can be viewed without running the notebook. `held_out_detection_examples.pdf` can be regenerated in Google Colab, by supplying `UOD_Dataset.tar`, `instances_test2017.json` and the three models' `test-m/predictions_coco_ids.json` files at the Google Drive paths specified in the notebook.
+
+## Opening the bootstrap notebook
 
 Use a Python/Jupyter environment with NumPy, pandas, Matplotlib and tqdm. The notebook retains its installation cell for faster-coco-eval==1.7.2. From the repository root, launch Jupyter with the common test analysis folder as the working directory:
 
